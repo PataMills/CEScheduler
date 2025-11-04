@@ -15,7 +15,6 @@ export default function registerTeamTaskPage(app){
     .bar{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#111837;border-bottom:1px solid #222943;position:sticky;top:0;z-index:10}
     .wrap{padding:12px 14px}
     h1{font-size:18px;margin:0 0 6px}
-    .sec{background:#12172a;border:1px solid #222943;border-radius:12px;padding:12px;margin-bottom:12px}
     .row{display:flex;gap:10px;flex-wrap:wrap}
     .pill{display:inline-block;background:#1c2446;border-radius:999px;padding:6px 10px;font-size:12px;border:1px solid #2a3158}
     .btn{background:#4051a3;color:#e9eefc;border:0;border-radius:10px;padding:10px 12px;font-weight:600}
@@ -62,13 +61,26 @@ export default function registerTeamTaskPage(app){
   </div>
 
   <script>
+    // define once, before anything else
+    window.esc = window.esc || function (v) {
+      const s = String(v ?? '');
+      return s.replace(/[&<>"']/g, c =>
+        c === '&' ? '&amp;' :
+        c === '<' ? '&lt;'  :
+        c === '>' ? '&gt;'  :
+        c === '"' ? '&quot;' :
+                    '&#39;'
+      );
+    };
+    const esc = window.esc;
+    const $ = (id) => document.getElementById(id);
+
     // Global error surface so failures never hide
     window.addEventListener('error', function(e){
       try { alert('Script error: ' + (e && e.message ? e.message : 'Unknown')); } catch(_) {}
     });
 
     // --- helpers ---
-    function esc(v){ var s=String(v==null?'':v); return s.replace(/[&<>"']/g,function(c){ return c=='&'?'&amp;':c=='<'?'&lt;':c=='>'?'&gt;':c=='"'?'&quot;':'&#39;'; }); }
     var qs = new URLSearchParams(location.search);
     var taskId = qs.get('id');
     var main = document.getElementById('main');
