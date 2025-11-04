@@ -14,6 +14,19 @@ export function headCommon(title = '') {
   <link rel="stylesheet" href="/static/appbar.css?v=3">
   <link rel="stylesheet" href="/static/calendar.css?v=3">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css">
+  <script>
+    // Global HTML escape helper for safe rendering
+    window.esc = function (v) {
+      const s = String(v ?? '');
+      return s.replace(/[&<>"']/g, c => (
+        c === '&' ? '&amp;' :
+        c === '<' ? '&lt;'  :
+        c === '>' ? '&gt;'  :
+        c === '"' ? '&quot;':
+                   '&#39;'
+      ));
+    };
+  </script>
 </head>
 <body class="theme-dark">
   <div id="appbar"></div>

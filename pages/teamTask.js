@@ -60,9 +60,49 @@ export default function registerTeamTaskPage(app){
   </div>
 
   <script>
+    // HTML escape helper for safe rendering
+    function esc(v) {
+      const s = String(v ?? '');
+      return s.replace(/[&<>"']/g, c => (
+        c === '&' ? '&amp;' :
+        c === '<' ? '&lt;'  :
+        c === '>' ? '&gt;'  :
+        c === '"' ? '&quot;':
+                   '&#39;'
+      ));
+    }
+
     const $ = (id)=>document.getElementById(id);
     const q = new URLSearchParams(location.search);
     const taskId = q.get('id');
+
+    // Load history events for this task
+    async function loadHistory(limit = 50) {
+      const historyEl = $('historyList');
+      if (!historyEl || !taskId) return;
+      
+      try {
+        const r = await fetch('/api/tasks/'+encodeURIComponent(taskId)+'/history');
+        if (!r.ok) throw new Error('HTTP '+r.status);
+        const events = await r.json();
+        
+        if (!events || !events.length) {
+          historyEl.innerHTML = '<div style="opacity:.7">No history yet.</div>';
+          return;
+        }
+        
+        historyEl.innerHTML = events.slice(0, limit).map(evt => {
+          const ts = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
+          const type = esc(evt.event_type || '');
+          const note = evt.note ? '<div style="opacity:.8;margin-top:4px">'+esc(evt.note)+'</div>' : '';
+          return '<div style="padding:8px 0;border-bottom:1px solid #222943">'+
+                 '<div><b>'+type+'</b> — '+ts+'</div>'+note+'</div>';
+        }).join('');
+      } catch (e) {
+        console.error('History load error:', e);
+        historyEl.innerHTML = '<div style="opacity:.7;color:#f66">Could not load history.</div>';
+      }
+    }
 
     async function load(){
       if(!taskId){ $('content').textContent='Missing task id.'; return; }
@@ -70,14 +110,25 @@ export default function registerTeamTaskPage(app){
         const r = await fetch('/api/tasks/team/'+encodeURIComponent(taskId));
         if(!r.ok) throw new Error('HTTP '+r.status);
         const d = await r.json();
-        render(d);
+        try {
+          render(d);
+        } catch (renderErr) {
+          console.error('Render error:', renderErr);
+          $('content').innerHTML = '<div class="sec" style="color:#f66">Render error: '+esc(renderErr.message)+'</div>';
+          throw renderErr; // Re-throw to trigger offline fallback
+        }
         // save last payload for offline
         localStorage.setItem('team_task_'+taskId, JSON.stringify(d));
       }catch(e){
         // try offline copy
         const cached = localStorage.getItem('team_task_'+taskId);
         if (cached){
-          render(JSON.parse(cached), true);
+          try {
+            render(JSON.parse(cached), true);
+          } catch (renderErr) {
+            console.error('Offline render error:', renderErr);
+            $('content').innerHTML = '<div class="sec" style="color:#f66">Render error: '+esc(renderErr.message)+'</div>';
+          }
         } else {
           $('content').innerHTML = '<div class="sec">Could not load task.</div>';
         }
