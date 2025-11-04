@@ -75,6 +75,7 @@ import teamTasksRoutes from "./routes/teamTasks.js";
 import tasksSearchRoutes from "./routes/tasksSearch.js";
 import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "./slack.js";
 import autoTasksRouter from "./routes/autoTasks.js";
+import teamTaskApi from "./routes/teamTaskApi.js";
 
 // --- init app FIRST ---
 const app = express();
@@ -119,6 +120,7 @@ app.use("/admin/users", requireAuthPage);
 // Mount teamTasksRoutes BEFORE tasksRouter to handle specific routes like /api/tasks/:id/ontheway
 app.use(teamTasksRoutes);
 app.use(tasksSearchRoutes);
+app.use(teamTaskApi);
 
 app.use("/api/myday", mydayRouter);
 app.use("/api/tasks", tasksRouter);

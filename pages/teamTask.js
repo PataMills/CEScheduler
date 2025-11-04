@@ -62,6 +62,11 @@ export default function registerTeamTaskPage(app){
   </div>
 
   <script>
+    // Global error surface so failures never hide
+    window.addEventListener('error', function(e){
+      try { alert('Script error: ' + (e && e.message ? e.message : 'Unknown')); } catch(_) {}
+    });
+
     // --- helpers ---
     function esc(v){ var s=String(v==null?'':v); return s.replace(/[&<>"']/g,function(c){ return c=='&'?'&amp;':c=='<'?'&lt;':c=='>'?'&gt;':c=='"'?'&quot;':'&#39;'; }); }
     var qs = new URLSearchParams(location.search);
