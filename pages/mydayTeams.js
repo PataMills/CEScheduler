@@ -18,10 +18,27 @@ export default function registerMyDayTeams(app){
   .fc .fc-toolbar-title { font-size: 16px !important; }
   .fc .fc-col-header-cell { padding: 2px 0; font-size: 10px; }
 }
-/* Phones: even tighter */
+/* Phones: even tighter + larger tap targets */
 @media (max-width: 480px) {
   .fc .fc-timegrid-slot { height: 18px; }
   .fc .fc-toolbar-title { font-size: 14px !important; }
+  
+  /* Larger tap targets for thumb-friendly interaction */
+  .fc .fc-button { 
+    min-height: 36px; 
+    padding: 6px 10px; 
+    font-size: 13px;
+  }
+  .fc-timegrid-event { 
+    min-height: 32px; 
+  }
+  .fc-list-event-title { 
+    line-height: 1.25;
+    padding: 8px 4px;
+  }
+  .fc-list-event { 
+    min-height: 44px; /* Apple HIG minimum */
+  }
 }
 </style>
 <div class="wrap">
@@ -602,13 +619,48 @@ document.addEventListener('DOMContentLoaded', loadCrews);
     cal.render();
     window.teamCal = cal;
 
-    // Auto-switch view when crossing breakpoints
-    window.addEventListener('resize', () => {
-      if (!window.teamCal) return;
+    // Restore last saved view (if available and not overridden by breakpoint)
+    const savedView = localStorage.getItem('mdt_view');
+    if (savedView && cal.view?.type !== savedView) {
+      // Only restore if screen size supports it
       const w = window.innerWidth;
-      const v = window.teamCal.view.type;
-      if (w < 480 && v !== 'listDay') window.teamCal.changeView('listDay');
-      else if (w >= 480 && w < 768 && v === 'listDay') window.teamCal.changeView('timeGridDay');
+      if (w >= 768 && (savedView === 'timeGridWeek' || savedView === 'timeGridDay')) {
+        cal.changeView(savedView);
+      } else if (w >= 480 && w < 768 && savedView === 'timeGridDay') {
+        cal.changeView(savedView);
+      }
+    }
+
+    // Save view preference on any view change
+    cal.on('viewDidMount', () => {
+      if (cal.view?.type) {
+        localStorage.setItem('mdt_view', cal.view.type);
+      }
+    });
+
+    // Debounced auto-switch view when crossing breakpoints
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (!window.teamCal) return;
+        const w = window.innerWidth;
+        const v = window.teamCal.view.type;
+        
+        // Phone: force listDay
+        if (w < 480 && v !== 'listDay') {
+          window.teamCal.changeView('listDay');
+        }
+        // Tablet: prefer timeGridDay if coming from listDay
+        else if (w >= 480 && w < 768 && v === 'listDay') {
+          window.teamCal.changeView('timeGridDay');
+        }
+        // Desktop: prefer timeGridWeek if coming from listDay/Day
+        else if (w >= 768 && (v === 'listDay' || v === 'timeGridDay')) {
+          const preferred = localStorage.getItem('mdt_view');
+          window.teamCal.changeView(preferred === 'timeGridDay' ? 'timeGridDay' : 'timeGridWeek');
+        }
+      }, 150); // 150ms debounce prevents flicker on orientation change
     });
   }
 
