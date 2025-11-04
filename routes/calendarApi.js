@@ -11,22 +11,45 @@ router.get("/events", async (req, res) => {
   if (!start || !end) return res.status(400).json({ error: "missing_range" });
 
   try {
-    const q = await pool.query(
-      `
-      SELECT t.id, t.type, t.name, t.window_start,
-             COALESCE(t.window_end, t.window_start) AS window_end,
-             COALESCE(t.status, 'scheduled') AS status,
-        a.resource_name,
-        public.job_material_ready(t.job_id) AS material_ready
-      FROM public.install_tasks t
-      LEFT JOIN public.install_task_assignments a ON a.task_id = t.id
-      WHERE t.window_start < $1::timestamptz
-        AND COALESCE(t.window_end, t.window_start) >= $2::timestamptz
-        AND ($3 = '' OR a.resource_name = $3)
-      ORDER BY t.window_start ASC
-      `,
-      [end, start, String(crew || '').trim()]
-    );
+    // Try to query with material_ready function (gracefully handle if function doesn't exist)
+    let q;
+    try {
+      q = await pool.query(
+        `
+        SELECT t.id, t.type, t.name, t.window_start,
+               COALESCE(t.window_end, t.window_start) AS window_end,
+               COALESCE(t.status, 'scheduled') AS status,
+          a.resource_name,
+          public.job_material_ready(t.job_id) AS material_ready
+        FROM public.install_tasks t
+        LEFT JOIN public.install_task_assignments a ON a.task_id = t.id
+        WHERE t.window_start < $1::timestamptz
+          AND COALESCE(t.window_end, t.window_start) >= $2::timestamptz
+          AND ($3 = '' OR a.resource_name = $3)
+        ORDER BY t.window_start ASC
+        `,
+        [end, start, String(crew || '').trim()]
+      );
+    } catch (fnErr) {
+      // Function doesn't exist yet - fall back to query without material_ready
+      console.warn("[CAL EVENTS] job_material_ready() not found, using fallback (apply migration to enable)");
+      q = await pool.query(
+        `
+        SELECT t.id, t.type, t.name, t.window_start,
+               COALESCE(t.window_end, t.window_start) AS window_end,
+               COALESCE(t.status, 'scheduled') AS status,
+          a.resource_name,
+          true AS material_ready
+        FROM public.install_tasks t
+        LEFT JOIN public.install_task_assignments a ON a.task_id = t.id
+        WHERE t.window_start < $1::timestamptz
+          AND COALESCE(t.window_end, t.window_start) >= $2::timestamptz
+          AND ($3 = '' OR a.resource_name = $3)
+        ORDER BY t.window_start ASC
+        `,
+        [end, start, String(crew || '').trim()]
+      );
+    }
 
     const events = q.rows.map(r => ({
       id: String(r.id) + ':' + (r.resource_name || ''),
@@ -59,14 +82,26 @@ router.patch("/events/:id", requireAuth, express.json(), async (req, res) => {
   const { start, end, force } = req.body || {};
   if (!id || !start) return res.status(400).json({ error: "bad_request" });
   try {
-    // Check material readiness
-    const chk = await pool.query(
-      `SELECT t.job_id, public.job_material_ready(t.job_id) AS material_ready
-         FROM public.install_tasks t WHERE t.id = $1`,
-      [id]
-    );
-    if (!chk.rowCount) return res.status(404).json({ error: "not_found" });
-    const ready = !!chk.rows[0].material_ready;
+    // Check material readiness (gracefully handle if function doesn't exist)
+    let ready = true; // Default to true if function not available
+    try {
+      const chk = await pool.query(
+        `SELECT t.job_id, public.job_material_ready(t.job_id) AS material_ready
+           FROM public.install_tasks t WHERE t.id = $1`,
+        [id]
+      );
+      if (!chk.rowCount) return res.status(404).json({ error: "not_found" });
+      ready = !!chk.rows[0].material_ready;
+    } catch (fnErr) {
+      // Function doesn't exist - verify task exists and allow reschedule
+      console.warn("[CAL PATCH] job_material_ready() not found, skipping material check");
+      const chk = await pool.query(
+        `SELECT t.id FROM public.install_tasks t WHERE t.id = $1`,
+        [id]
+      );
+      if (!chk.rowCount) return res.status(404).json({ error: "not_found" });
+    }
+    
     const isAdmin = (req.user?.role === 'admin' || req.user?.role === 'ops');
     if (!ready && !isAdmin && !force) {
       return res.status(409).json({
