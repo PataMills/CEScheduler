@@ -8,6 +8,21 @@ export default function registerMyDayTeams(app){
 <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
 <style>
 /* Page-specific styles - everything else comes from shared CSS */
+
+/* Mobile-first compaction */
+@media (max-width: 768px) {
+  #teamCal { font-size: 11px; }
+  .fc .fc-timegrid-slot { height: 22px; }            /* tighter rows */
+  .fc .fc-timegrid-slot-label { font-size: 10px; }
+  .fc .fc-button { padding: 3px 8px; font-size: 12px; }
+  .fc .fc-toolbar-title { font-size: 16px !important; }
+  .fc .fc-col-header-cell { padding: 2px 0; font-size: 10px; }
+}
+/* Phones: even tighter */
+@media (max-width: 480px) {
+  .fc .fc-timegrid-slot { height: 18px; }
+  .fc .fc-toolbar-title { font-size: 14px !important; }
+}
 </style>
 <div class="wrap">
   <div class="row" style="justify-content:space-between">
@@ -436,9 +451,6 @@ document.addEventListener('DOMContentLoaded', loadCrews);
     const el = $('teamCal');
     if (!el) return;
 
-    const lastView = localStorage.getItem(LAST_TEAM_VIEW);
-    const initialView = (lastView === 'timeGridDay' || lastView === 'timeGridWeek') ? lastView : 'timeGridWeek';
-
     const typeKey = (t)=>{
       t = String(t||'').toLowerCase();
       if (t.startsWith('manu')) return 'manufacturing';
@@ -459,16 +471,48 @@ document.addEventListener('DOMContentLoaded', loadCrews);
     };
 
     cal = new FullCalendar.Calendar(el, {
-      initialView,
-      headerToolbar: { left:'prev,today,next', center:'title', right:'timeGridWeek,timeGridDay' },
-      height: 'auto',
-      expandRows: true,
+      initialView: (window.innerWidth < 480) ? 'listDay'
+                 : (window.innerWidth < 768) ? 'timeGridDay'
+                 : (localStorage.getItem(LAST_TEAM_VIEW) || 'timeGridWeek'),
+
+      headerToolbar: (window.innerWidth < 480)
+        ? { left:'prev,next', center:'title', right:'today,listDay' }
+        : { left:'prev,today,next', center:'title', right:'timeGridWeek,timeGridDay' },
+
+      // Compact timegrid
       slotMinTime: '06:00:00',
       slotMaxTime: '18:00:00',
+      slotDuration: (window.innerWidth < 768) ? '01:00:00' : '00:30:00',
+      slotLabelInterval: (window.innerWidth < 768) ? '02:00:00' : '01:00:00',
+      scrollTime: '07:30:00',
+
+      // Sizing
+      height: 'auto',
+      contentHeight: (window.innerWidth < 768) ? 'auto' : 'auto',
+      aspectRatio: (window.innerWidth < 480) ? 0.6 : 1.2,
+
+      // Readability
       nowIndicator: true,
       allDaySlot: false,
+      dayMaxEvents: (window.innerWidth < 768) ? 2 : true,
+      eventMinHeight: 18,
+      displayEventEnd: true,
+      slotEventOverlap: false,
+      eventTimeFormat: { hour: 'numeric', minute: '2-digit' },
       editable: false,
       selectable: false,
+
+      views: {
+        timeGridWeek: {
+          dayHeaderFormat: (window.innerWidth < 768)
+            ? { weekday: 'short', day: 'numeric' }
+            : { weekday: 'short', month: 'numeric', day: 'numeric' }
+        },
+        listDay: {
+          noEventsText: 'No tasks today',
+          dayHeaderFormat: { weekday: 'short', month: 'short', day: 'numeric' }
+        }
+      },
 
       events: async (info, success, failure) => {
         try {
@@ -557,6 +601,15 @@ document.addEventListener('DOMContentLoaded', loadCrews);
 
     cal.render();
     window.teamCal = cal;
+
+    // Auto-switch view when crossing breakpoints
+    window.addEventListener('resize', () => {
+      if (!window.teamCal) return;
+      const w = window.innerWidth;
+      const v = window.teamCal.view.type;
+      if (w < 480 && v !== 'listDay') window.teamCal.changeView('listDay');
+      else if (w >= 480 && w < 768 && v === 'listDay') window.teamCal.changeView('timeGridDay');
+    });
   }
 
   function wireCalendarControls() {

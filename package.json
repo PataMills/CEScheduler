@@ -11,8 +11,8 @@
     "db:migrate": "node ./scripts/db-migrate.js",
     "db:seed": "node ./scripts/db-seed.js",
   "seed:min": "node ./scripts/db-seed-min.js",
-    "test": "jest --runInBand",
-    "test:api": "jest __tests__/api --runInBand",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
+    "test:api": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js __tests__/api --runInBand",
     "test:ui": "playwright test",
     "lint": "eslint .",
     "format": "prettier -w ."

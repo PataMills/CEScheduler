@@ -110,8 +110,10 @@ async function ensureSchema() {
   }
 }
 
-// Run schema setup immediately
-await ensureSchema();
+// Run schema setup immediately (skip during test)
+if (process.env.NODE_ENV !== 'test') {
+  await ensureSchema();
+}
 
 // GET admin list of invites - matches actual schema
 router.get('/', requireAdmin, async (req, res) => {
