@@ -42,8 +42,10 @@ export default function registerTeamTaskPage(app){
     <div style="font-weight:700">Team Task</div>
     <button id="btnSync" class="btn" style="background:#2e9157">Sync for offline</button>
   </div>
-  <div class="wrap" id="content">Loading…</div>
-  <div class="foot">Tip: tap a document to open it. After 'Sync for offline', this page and documents will be available without signal.</div>
+  <div id="main">
+    <div class="muted">Loading…</div>
+    <div class="muted small">Tip: tap a document to open it. After "Sync for offline", this page and documents will be available without signal.</div>
+  </div>
 
   <!-- Complete modal -->
   <div id="completeModal" hidden>
@@ -60,99 +62,57 @@ export default function registerTeamTaskPage(app){
   </div>
 
   <script>
-    // HTML escape helper for safe rendering
-    function esc(v) {
-      const s = String(v ?? '');
-      return s.replace(/[&<>"']/g, c => (
-        c === '&' ? '&amp;' :
-        c === '<' ? '&lt;'  :
-        c === '>' ? '&gt;'  :
-        c === '"' ? '&quot;':
-                   '&#39;'
-      ));
-    }
+    // --- helpers ---
+    function esc(v){ var s=String(v==null?'':v); return s.replace(/[&<>"']/g,function(c){ return c=='&'?'&amp;':c=='<'?'&lt;':c=='>'?'&gt;':c=='"'?'&quot;':'&#39;'; }); }
+    var qs = new URLSearchParams(location.search);
+    var taskId = qs.get('id');
+    var main = document.getElementById('main');
 
-    const $ = (id)=>document.getElementById(id);
-    const q = new URLSearchParams(location.search);
-    const taskId = q.get('id');
-
-    // Fetch first URL that returns 2xx JSON
-    async function fetchAny(urls){
-      for (const u of urls){
-        try {
-          const r = await fetch(u, { credentials:'same-origin' });
-          if (r.ok) return await r.json();
-        } catch(e){ /* try next */ }
-      }
-      throw new Error('No task API responded (tried: '+urls.join(', ')+')');
-    }
-
-    // Visible error so the page doesn't look "stuck"
     function showError(msg){
-      const host = document.getElementById('main') || document.getElementById('content') || document.body;
-      host.insertAdjacentHTML('beforeend',
-        '<div style="margin:12px 16px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px">'
+      main.insertAdjacentHTML('beforeend',
+        '<div style="margin:12px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px">'
         + '<div style="font-weight:600;margin-bottom:6px">Can\'t load task</div>'
         + '<div class="small" style="opacity:.9">' + esc(msg||'Unknown error') + '</div>'
         + '</div>'
       );
     }
 
-    // Load history events for this task
-    async function loadHistory(limit = 50) {
-      const historyEl = $('historyList');
-      if (!historyEl || !taskId) return;
-      
-      try {
-        const r = await fetch('/api/tasks/'+encodeURIComponent(taskId)+'/history');
-        if (!r.ok) throw new Error('HTTP '+r.status);
-        const events = await r.json();
-        
-        if (!events || !events.length) {
-          historyEl.innerHTML = '<div style="opacity:.7">No history yet.</div>';
-          return;
-        }
-        
-        historyEl.innerHTML = events.slice(0, limit).map(evt => {
-          const ts = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
-          const type = esc(evt.event_type || '');
-          const note = evt.note ? '<div style="opacity:.8;margin-top:4px">'+esc(evt.note)+'</div>' : '';
-          return '<div style="padding:8px 0;border-bottom:1px solid #222943">'+
-                 '<div><b>'+type+'</b> — '+ts+'</div>'+note+'</div>';
-        }).join('');
-      } catch (e) {
-        console.error('History load error:', e);
-        historyEl.innerHTML = '<div style="opacity:.7;color:#f66">Could not load history.</div>';
-      }
+    async function fetchJSON(u){
+      var r = await fetch(u, { credentials:'same-origin' });
+      if(!r.ok) throw new Error(u+' \u2192 HTTP '+r.status);
+      return r.json();
     }
 
     async function load(){
       try{
         if(!taskId) throw new Error('Missing ?id');
-        // Try common endpoints so a route mismatch won’t brick the page
-        const data = await fetchAny([
-          '/api/team/task?id=' + encodeURIComponent(taskId),
-          '/api/tasks/' + encodeURIComponent(taskId),
-          '/api/task/' + encodeURIComponent(taskId),
-          '/api/tasks/team/' + encodeURIComponent(taskId)
-        ]);
+        // Try the likely endpoints in order
+        var t = await (async function(){
+          var urls = [
+            '/api/team/task?id=' + encodeURIComponent(taskId),
+            '/api/tasks/' + encodeURIComponent(taskId),
+            '/api/task/' + encodeURIComponent(taskId)
+          ];
+          for (var i=0;i<urls.length;i++){
+            var u = urls[i];
+            try { return await fetchJSON(u); } catch(_) {}
+          }
+          throw new Error('No task API matched this id.');
+        })();
 
-        // Basic sanity so render() can’t explode on nulls
-        const t = data || {};
-        const customer = t.customer_name || t.job_name || t.name || ('Task '+taskId);
-        const when = (t.window_start && t.window_end)
-          ? (new Date(t.window_start).toLocaleString()+' – '+new Date(t.window_end).toLocaleString())
+        // Normalize fields so render never explodes
+        var customer = t.customer_name || t.job_name || t.name || ('Task ' + taskId);
+        var when = (t.window_start && t.window_end)
+          ? (new Date(t.window_start).toLocaleString()+' \u2013 '+new Date(t.window_end).toLocaleString())
           : (t.start || t.date || '');
-        const addr = t.address || t.site_address || '';
+        var addr = t.address || t.site_address || '';
+        var docs = Array.isArray(t.docs) ? t.docs : [];
 
-        const main = document.getElementById('main') || document.getElementById('content') || document.body;
         var ih = '';
-        ih += '<div class="sec" style="margin:12px">';
+        ih += '<div class="panel" style="margin:12px">';
         ih +=   '<div style="font-weight:700;font-size:18px">' + esc(customer) + '</div>';
-        ih +=   '<div class="muted small" style="margin-top:4px">' + esc(when) + '</div>';
-        if (addr) {
-          ih += '<div class="muted small" style="margin-top:4px">' + esc(addr) + '</div>';
-        }
+        if (when) ih += '<div class="muted small" style="margin-top:4px">' + esc(when) + '</div>';
+        if (addr) ih += '<div class="muted small" style="margin-top:4px">' + esc(addr) + '</div>';
         ih +=   '<div class="row" style="gap:8px;margin-top:12px">'
              +     '<button class="btn" id="bOTW">On the way</button>'
              +     '<button class="btn" id="bArr">Arrived</button>'
@@ -160,44 +120,37 @@ export default function registerTeamTaskPage(app){
              +     '<button class="btn" id="bDone">Complete</button>'
              +   '</div>';
         ih += '</div>';
-        ih += '<div class="sec" style="margin:12px">'
+        ih += '<div class="panel" style="margin:12px">'
            +   '<div style="font-weight:600">Documents</div>'
-           +   '<div id="docs" class="muted small" style="margin-top:6px">Loading…</div>'
+           +   '<div id="docs" class="muted small" style="margin-top:6px">' + (docs.length? '' : 'No documents.') + '</div>'
            + '</div>';
         main.innerHTML = ih;
 
-        // Button wiring (errors won’t crash UI)
+        if (docs.length){
+          var htmlDocs = docs.map(function(d){
+            return '<div><a target="_blank" href="' + esc(d.url||'#') + '">' + esc(d.name||d.file||'file') + '</a></div>';
+          }).join('');
+          var docsHost = document.getElementById('docs');
+          if (docsHost) docsHost.innerHTML = htmlDocs;
+        }
+
         async function postStatus(path, body){
-          const r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'},
+          var r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify(Object.assign({ when: new Date().toISOString() }, body||{})) });
           if(!r.ok) throw new Error('HTTP '+r.status);
         }
-  document.getElementById('bOTW').onclick = async()=>{ try{ await postStatus('/api/tasks/' + taskId + '/ontheway'); }catch(e){ showError(e.message); } };
-  document.getElementById('bArr').onclick = async()=>{ try{ await postStatus('/api/tasks/' + taskId + '/arrived'); }catch(e){ showError(e.message); } };
-  document.getElementById('bWip').onclick = async()=>{ try{ await postStatus('/api/tasks/' + taskId + '/wip', { note: '' }); }catch(e){ showError(e.message); } };
-        document.getElementById('bDone').onclick = ()=>{ try{ if (typeof openComplete === 'function') openComplete(); }catch{} };
-
-        // Docs list (tolerant)
-        const docsHost = document.getElementById('docs');
-        try{
-          const docs = Array.isArray(t.docs) ? t.docs : (await fetchAny([
-            '/api/tasks/' + taskId + '/docs',
-            '/api/task/' + taskId + '/docs'
-          ]));
-          if (Array.isArray(docs) && docs.length){
-            docsHost.innerHTML = docs.map(function(d){
-              return '<div><a href="' + esc(d.url||'#') + '" target="_blank">' + esc(d.name||d.file||'file') + '</a></div>';
-            }).join('');
-          } else {
-            docsHost.textContent = 'No documents.';
-          }
-        }catch{ docsHost.textContent = 'No documents.'; }
+        document.getElementById('bOTW').onclick = async function(){ try{ await postStatus('/api/tasks/' + taskId + '/ontheway'); }catch(e){ showError(e.message); } };
+        document.getElementById('bArr').onclick = async function(){ try{ await postStatus('/api/tasks/' + taskId + '/arrived'); }catch(e){ showError(e.message); } };
+        document.getElementById('bWip').onclick = async function(){ try{ await postStatus('/api/tasks/' + taskId + '/wip', { note:'' }); }catch(e){ showError(e.message); } };
+        document.getElementById('bDone').onclick = function(){ try{ if (typeof openComplete === 'function') openComplete(); }catch(_){} };
 
       }catch(e){
         console.error(e);
         showError(e.message);
       }
     }
+
+    document.addEventListener('DOMContentLoaded', load);
 
     function render(data, offline){
       const t = data.task || {};
