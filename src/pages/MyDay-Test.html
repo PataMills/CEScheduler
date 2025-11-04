@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>My Day Test</title>
+    <style>
+      body { font-family: system-ui, Arial, sans-serif; padding: 16px; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 10px 0; }
+      .muted { color: #666; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h2>My Day (debug)</h2>
+    <div id="status">Loading…</div>
+    <div id="list"></div>
+
+    <script>
+      function tomorrowYmd() {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd}`;
+      }
+
+      async function load() {
+        const date = tomorrowYmd();
+        try {
+          const res = await fetch(`/api/myday?date=${date}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          const rows = Array.isArray(data) ? data : (data.rows || []);
+          document.getElementById("status").textContent = `Tasks loaded: ${rows.length}`;
+          const list = document.getElementById("list");
+          list.innerHTML = rows.map(r => `
+            <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button onclick="arrived(${r.task_id})">Arrived</button>
+            <button onclick="completeTask(${r.task_id})">Complete</button>
+            ${r.address ? `<button onclick="window.open(mapUrl('${"${r.address}"}'),'_blank')">Directions</button>` : ''}
+            </div>
+          `).join("");
+        } catch (e) {
+          document.getElementById("status").textContent = `Error: ${e.message}`;
+          console.error(e);
+        }
+      }
+
+      load();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "name": "cabinet-manufacturing-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node app.js"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.13.0",
+    "@slack/web-api": "^7.12.0",
+    "archiver": "^7.0.1",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mime": "^4.1.0",
+    "nodemailer": "^6.10.1",
+    "pg": "^8.11.5",
+    "puppeteer": "^24.24.0",
+    "sharp": "^0.34.4"
+  }
+}

@@ -1,0 +1,45 @@
+/* Sales Workflow Navigation Bar */
+.sales-nav {
+  background: #0f1220;
+  border-bottom: 1px solid #2a2f3f;
+  padding: 0;
+  margin: 0 0 16px 0;
+}
+
+.sales-nav-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  gap: 0;
+  align-items: center;
+}
+
+.sales-nav-link {
+  display: inline-block;
+  padding: 12px 20px;
+  color: #9aa4b2;
+  text-decoration: none;
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.sales-nav-link:hover {
+  color: #eef2ff;
+  background: #1a2033;
+}
+
+.sales-nav-link.active {
+  color: #eef2ff;
+  border-bottom-color: #4051a3;
+  background: #12172a;
+}
+
+.sales-nav-bid-id {
+  margin-left: auto;
+  padding: 8px 16px;
+  color: #c7d2fe;
+  font-size: 12px;
+  opacity: 0.8;
+}

@@ -1,0 +1,256 @@
+// routes/invitations.js
+import express from 'express';
+import crypto from 'node:crypto';
+import { pool } from '../db.js';
+import { PUBLIC_BASE_URL } from '../slack.js'; // you already have this in your project
+
+const router = express.Router();
+
+// Admin middleware (inline)
+function requireAdmin(req, res, next) {
+  if (String(process.env.INVITE_DEV_ALLOW || '') === '1') return next();
+  const user = req.user || req.auth?.user || req.session?.user || null;
+  if (user && (user.role === 'admin' || user.is_admin)) return next();
+  return res.status(403).json({ error: 'forbidden' });
+}
+
+// --- simple mailer: uses SMTP env vars if available; falls back to console
+let _mailer = null;
+async function getMailer() {
+  if (_mailer !== null) return _mailer;
+  try {
+    const nodemailer = (await import('nodemailer')).default;
+    if (process.env.SMTP_HOST) {
+      const transport = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: Number(process.env.SMTP_PORT || 587),
+        secure: !!Number(process.env.SMTP_SECURE || 0),
+        auth: process.env.SMTP_USER && process.env.SMTP_PASS
+          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+          : undefined,
+      });
+      _mailer = {
+        async send(to, subject, html) {
+          await transport.sendMail({
+            from: process.env.SMTP_FROM || 'no-reply@cabinetsexpress.local',
+            to, subject, html,
+          });
+        }
+      };
+    } else {
+      _mailer = {
+        async send(to, subject, html) {
+          console.log('[INVITE EMAIL]', { to, subject, html });
+        }
+      };
+    }
+  } catch (e) {
+    console.error('[MAIL INIT ERR]', e);
+    _mailer = { async send(to, subject, html) { console.log('[INVITE EMAIL]', { to, subject, html }); } };
+  }
+  return _mailer;
+}
+
+const ALLOWED_ROLES = ['admin','sales','installer','service','manufacturing','assembly','delivery'];
+
+// Utility: invalidate old open invites for this org/email before creating a new one
+async function expireOldInvites(org_id, email) {
+  await pool.query(`
+    UPDATE public.invitations
+       SET used_at = now()
+     WHERE org_id = $1
+       AND email  = $2
+       AND used_at IS NULL
+       AND (expires_at IS NULL OR expires_at <= now())
+  `, [org_id, email]);
+}
+
+// GET admin list of invites (org-scoped) - returns pending only
+router.get('/', requireAdmin, async (req, res) => {
+  try {
+    const org_id = req.user?.org_id;
+    const q = await pool.query(`
+      SELECT id, email, name, role, expires_at, used_at, created_by, created_at, token_hash
+        FROM public.invitations
+       WHERE org_id=$1 AND used_at IS NULL
+       ORDER BY created_at DESC
+    `, [org_id || null]);
+    // Return token for copy-link feature (admin only, already behind requireAdmin)
+    const rows = q.rows.map(r => ({ ...r, token: r.token_hash }));
+    res.json(rows);
+  } catch (e) {
+    console.error('[INVITES list ERR]', e);
+    res.status(500).json({ error: 'db_error' });
+  }
+});
+
+// POST create invitation (org-scoped)
+router.post('/', requireAdmin, express.json(), async (req, res) => {
+  try {
+    const { email, name, role, expires_in_days = 14 } = req.body || {};
+    if (!email || !role) return res.status(400).json({ error: 'missing_fields' });
+    if (!ALLOWED_ROLES.includes(role)) return res.status(400).json({ error: 'invalid_role' });
+
+    const org_id = req.user.org_id;
+
+    // Close out any stale open invite for this org/email
+    await expireOldInvites(org_id, email);
+
+    // New token
+    const token = crypto.randomBytes(24).toString('hex');
+    const token_hash = crypto.createHash('sha256').update(token).digest('hex');
+    const expires_at = new Date(Date.now() + (Number(expires_in_days) || 14) * 24 * 60 * 60 * 1000);
+
+    // Create invite
+    await pool.query(`
+      INSERT INTO public.invitations (email, name, role, token_hash, expires_at, created_by, org_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `, [email, name || null, role, token_hash, expires_at, req.user.email || null, org_id]);
+
+    // Send email
+    const link = `${PUBLIC_BASE_URL || ''}/accept-invite?token=${token}`;
+    const subject = `You're invited to Cabinets Express`;
+    const html = `
+      <div style="font-family:system-ui,Arial,sans-serif">
+        <p>Hello${name ? ' ' + name : ''},</p>
+        <p>You have been invited to join the Cabinets Express system with role <b>${role}</b>.</p>
+        <p><a href="${link}">Click here to accept your invitation</a></p>
+        <p>This link expires on ${expires_at.toISOString()}.</p>
+      </div>`.trim();
+
+    const mailer = await getMailer();
+    await mailer.send(email, subject, html);
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[INVITES create ERR]', e);
+    // Likely uniqueness violation on (org_id,email) WHERE used_at IS NULL
+    if (String(e.message || '').includes('invitations_org_email_open_idx')) {
+      return res.status(409).json({ error: 'open_invite_exists' });
+    }
+    res.status(500).json({ error: 'db_error' });
+  }
+});
+
+// POST accept invitation (creates user in same org) - this is mounted at /api/admin/invitations but should be public
+// We'll need to mount this separately in app.js as /api/auth/accept-invite or move it
+router.post('/accept/:token', express.json(), async (req, res) => {
+  try {
+    const { token, name, password } = req.body || {};
+    if (!token || !password) return res.status(400).json({ error: 'missing_fields' });
+
+    const token_hash = crypto.createHash('sha256').update(token).digest('hex');
+    const invq = await pool.query(`
+      SELECT *
+        FROM public.invitations
+       WHERE token_hash=$1
+         AND used_at IS NULL
+    `, [token_hash]);
+    const inv = invq.rows[0];
+    if (!inv) return res.status(400).json({ error: 'invalid_or_used_token' });
+
+    // Enforce expiry in code (we can’t use now() in the partial index)
+    if (inv.expires_at && new Date(inv.expires_at).getTime() <= Date.now()) {
+      // mark used to free up unique slot
+      await pool.query(`UPDATE public.invitations SET used_at = now() WHERE id=$1`, [inv.id]);
+      return res.status(400).json({ error: 'invite_expired' });
+    }
+
+    if (!ALLOWED_ROLES.includes(inv.role)) {
+      // Safety check in case roles changed
+      return res.status(400).json({ error: 'invalid_role' });
+    }
+
+    const bcrypt = (await import('bcryptjs')).default;
+    const password_hash = await bcrypt.hash(password, 10);
+
+    // Create user in same org
+    const ins = await pool.query(`
+      INSERT INTO public.users (name, email, role, org_id, status, password_hash, is_active, password_reset_required)
+      VALUES ($1,$2,$3,$4,'active',$5,true,false)
+      RETURNING id
+    `, [
+      name || (inv.email ? inv.email.split('@')[0] : 'New User'),
+      inv.email,
+      inv.role,
+      inv.org_id || null,
+      password_hash
+    ]);
+
+    // Close the invite
+    await pool.query(`UPDATE public.invitations SET used_at = now() WHERE id=$1`, [inv.id]);
+
+    res.json({ ok: true, user_id: ins.rows[0].id });
+  } catch (e) {
+    console.error('[INVITES accept ERR]', e);
+    res.status(500).json({ error: 'db_error' });
+  }
+});
+
+// Resend an invite
+router.post('/:id/resend', requireAdmin, async (req, res) => {
+  try {
+    const org_id = req.user?.org_id;
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad_id' });
+
+    const q = await pool.query(`
+      SELECT email, name, role, token_hash, expires_at
+        FROM public.invitations
+       WHERE id=$1 AND org_id=$2 AND used_at IS NULL
+    `, [id, org_id || null]);
+    
+    if (!q.rowCount) return res.status(404).json({ error: 'not_found' });
+    const inv = q.rows[0];
+
+    // Extend expiry
+    const new_expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    await pool.query(`UPDATE public.invitations SET expires_at=$1 WHERE id=$2`, [new_expires, id]);
+
+    // Resend email (token_hash is stored; we can't recover original token, so generate new one)
+    const token = crypto.randomBytes(24).toString('hex');
+    const token_hash = crypto.createHash('sha256').update(token).digest('hex');
+    await pool.query(`UPDATE public.invitations SET token_hash=$1, expires_at=$2 WHERE id=$3`, [token_hash, new_expires, id]);
+
+    const link = `${PUBLIC_BASE_URL || ''}/accept-invite?token=${token}`;
+    const subject = `You're invited to Cabinets Express`;
+    const html = `
+      <div style="font-family:system-ui,Arial,sans-serif">
+        <p>Hello${inv.name ? ' ' + inv.name : ''},</p>
+        <p>You have been invited to join the Cabinets Express system with role <b>${inv.role}</b>.</p>
+        <p><a href="${link}">Click here to accept your invitation</a></p>
+        <p>This link expires on ${new_expires.toISOString()}.</p>
+      </div>`.trim();
+
+    const mailer = await getMailer();
+    await mailer.send(inv.email, subject, html);
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[INVITES resend ERR]', e);
+    res.status(500).json({ error: 'db_error' });
+  }
+});
+
+// Revoke an open invite
+router.post('/:id/revoke', requireAdmin, async (req, res) => {
+  try {
+    const org_id = req.user?.org_id;
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad_id' });
+
+    const upd = await pool.query(`
+      UPDATE public.invitations
+         SET used_at = now()
+       WHERE id=$1 AND org_id=$2 AND used_at IS NULL
+      RETURNING id
+    `, [id, org_id || null]);
+    if (!upd.rowCount) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[INVITES revoke ERR]', e);
+    res.status(500).json({ error: 'db_error' });
+  }
+});
+
+export default router;

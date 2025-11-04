@@ -1,0 +1,4 @@
+.salesNavTab { display:inline-block;padding:12px 32px;font-size:15px;color:#eef2ff;text-decoration:none;border:none;background:none;transition:.2s; }
+.salesNavTab.active { background:#212432;color:#fff;font-weight:700;border-bottom:2px solid #6ee7b7; }
+.salesNavTab:not(.active):hover { background:#222a44;color:#bff7e6; }
+#salesNavBar { width:100%;margin-bottom:0; }

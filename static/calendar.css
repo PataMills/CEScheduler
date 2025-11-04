@@ -1,0 +1,146 @@
+/* static/calendar.css - FullCalendar dark theme adjustments */
+
+/* Event type colors - matches your task types */
+body.theme-dark .fc .ev-manufacturing { 
+  background: #3b82f6 !important; 
+  border-color: #3b82f6 !important; 
+}
+
+body.theme-dark .fc .ev-paint { 
+  background: #8b5cf6 !important; 
+  border-color: #8b5cf6 !important; 
+}
+
+body.theme-dark .fc .ev-assembly { 
+  background: #f59e0b !important; 
+  border-color: #f59e0b !important; 
+}
+
+body.theme-dark .fc .ev-delivery { 
+  background: #10b981 !important; 
+  border-color: #10b981 !important; 
+}
+
+body.theme-dark .fc .ev-install { 
+  background: #22c55e !important; 
+  border-color: #22c55e !important; 
+}
+
+body.theme-dark .fc .ev-service { 
+  background: #ef4444 !important; 
+  border-color: #ef4444 !important; 
+}
+
+/* Optional visual polish: colored left bar */
+body.theme-dark .fc-event { 
+  border-left: 4px solid rgba(255,255,255,0.2) !important; 
+}
+
+body.theme-dark .fc .ev-manufacturing { border-left-color: #3b82f6 !important; }
+body.theme-dark .fc .ev-paint { border-left-color: #8b5cf6 !important; }
+body.theme-dark .fc .ev-assembly { border-left-color: #f59e0b !important; }
+body.theme-dark .fc .ev-delivery { border-left-color: #10b981 !important; }
+body.theme-dark .fc .ev-install { border-left-color: #22c55e !important; }
+body.theme-dark .fc .ev-service { border-left-color: #ef4444 !important; }
+
+/* Status badges inside event */
+body.theme-dark .fc .badge { 
+  display: inline-block; 
+  padding: 0 6px; 
+  border-radius: 999px; 
+  font-size: 10px; 
+  font-weight: 600; 
+  margin-left: 6px; 
+}
+
+body.theme-dark .fc .badge.scheduled { 
+  background: #1f2937; 
+  color: #e5e7eb; 
+  border: 1px solid #374151; 
+}
+
+body.theme-dark .fc .badge.in_progress { 
+  background: #1d4ed8; 
+  color: #e5e7eb; 
+  border: 1px solid #3b82f6; 
+}
+
+body.theme-dark .fc .badge.wip { 
+  background: #92400e; 
+  color: #fde68a; 
+  border: 1px solid #f59e0b; 
+}
+
+body.theme-dark .fc .badge.complete { 
+  background: #065f46; 
+  color: #bbf7d0; 
+  border: 1px solid #10b981; 
+}
+
+body.theme-dark .fc .badge.en_route { 
+  background: #1e3a8a; 
+  color: #dbeafe; 
+  border: 1px solid #3b82f6; 
+}
+
+/* Dark theme overrides for FullCalendar UI */
+body.theme-dark .fc {
+  background: var(--panel, #111318);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+body.theme-dark .fc .fc-toolbar {
+  background: var(--panel, #111318);
+  color: var(--text, #eef2ff);
+  padding: 12px;
+}
+
+body.theme-dark .fc .fc-button {
+  background: #1a2033;
+  border: 1px solid var(--line, #212432);
+  color: var(--text, #eef2ff);
+}
+
+body.theme-dark .fc .fc-button:hover {
+  background: #222a44;
+}
+
+body.theme-dark .fc .fc-button-active {
+  background: var(--blue, #3b82f6);
+  border-color: var(--blue, #3b82f6);
+}
+
+body.theme-dark .fc th {
+  background: var(--panel, #111318);
+  color: var(--muted, #8b93a3);
+  border-color: var(--line, #212432);
+}
+
+body.theme-dark .fc td {
+  border-color: var(--line, #212432);
+}
+
+body.theme-dark .fc .fc-daygrid-day,
+body.theme-dark .fc .fc-timegrid-slot {
+  background: var(--bg, #0b0c10);
+}
+
+body.theme-dark .fc .fc-day-today {
+  background: rgba(59, 130, 246, 0.1) !important;
+}
+
+/* Modal for complete note */
+body.theme-dark #noteModal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 9999;
+}
+
+body.theme-dark #noteModal[hidden] {
+  display: none;
+}

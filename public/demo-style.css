@@ -1,0 +1,78 @@
+:root{
+  --bg:#0b0c10;
+  --panel:#111318;
+  --card:#151822;
+  --line:#212432;
+  --text:#eef2ff;
+  --muted:#8b93a3;
+  --accent:#6ee7b7;
+  --warn:#ef4444;
+  --button:#1a2033;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial
+}
+
+/* Layout */
+.wrap{max-width:1200px;margin:0 auto;padding:24px}
+.pageHead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand .logo{
+  width:34px;height:34px;border-radius:10px;
+  background:linear-gradient(135deg,#2a334d 0%,#1a2033 100%);
+  border:1px solid var(--line); box-shadow:0 6px 18px rgba(0,0,0,.25);
+}
+.brand .title{font-weight:700;letter-spacing:.2px}
+
+/* Surfaces */
+.panel{
+  background:var(--panel); border:1px solid var(--line);
+  border-radius:14px; padding:16px; margin:12px 0;
+  box-shadow:0 8px 24px rgba(0,0,0,.25)
+}
+.card{
+  background:var(--card); border:1px solid var(--line);
+  border-radius:14px; padding:14px; box-shadow:0 6px 18px rgba(0,0,0,.22)
+}
+hr.hr{border:none;border-top:1px solid var(--line);margin:12px 0}
+
+/* Type */
+h1{margin:0;font-size:24px}
+h2{margin:0 0 6px;font-size:18px}
+h3{margin:8px 0 6px;font-size:15px}
+.muted{color:var(--muted);font-size:12px}
+
+/* Controls */
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grid{display:grid;gap:12px}
+.grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:1000px){.grid.cols-3{grid-template-columns:1fr 1fr}}
+@media (max-width:700px){.grid.cols-3{grid-template-columns:1fr}}
+
+.btn{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:10px 14px;border-radius:12px;border:1px solid var(--line);
+  background:var(--button); color:var(--text); cursor:pointer; text-decoration:none
+}
+.btn:hover{filter:brightness(1.05)}
+.btn-accent{background:#19342d;border-color:#1c3f34;color:#bff7e6}
+.btn-ghost{background:transparent}
+
+/* Badges */
+.badge{padding:2px 8px;border-radius:9999px;font-size:12px;font-weight:600}
+.ok{background:#1f7a47}
+.todo{background:#7a5e1f}
+.warn{background:#7a1f2c}
+
+/* KPI tiles */
+.kpi{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.02)}
+.kpi .lab{color:var(--muted);font-size:12px}
+.kpi .val{font-weight:700}
+
+/* Toast */
+#toasts{position:fixed;right:16px;top:16px;display:flex;flex-direction:column;gap:8px;z-index:9999}
+.toast{background:#111;border:1px solid #333;color:#fff;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25)}

@@ -1,0 +1,216 @@
+// routes/teamTasks.js
+import express from "express";
+import pool from "../db.js";
+import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "../slack.js";
+
+const router = express.Router();
+
+const TABLE = "public.install_tasks";
+const COL_ID = "id";
+const COL_STATUS = "status";
+const COL_UPDATED = "updated_at";
+const COL_NOTES = "notes";
+
+// dev signal
+console.log("[teamTasks] routes loaded for install_tasks");
+
+// ---- helpers
+async function getTask(id) {
+  const r = await pool.query(
+    `SELECT ${COL_ID}, ${COL_STATUS}, ${COL_UPDATED} FROM ${TABLE} WHERE ${COL_ID} = $1`,
+    [id]
+  );
+  return r.rows[0] || null;
+}
+
+async function fetchTaskContext(id) {
+  const sql = `
+    SELECT it.id,
+           it.job_id,
+           it.type,
+           it.name,
+           it.status,
+           it.window_start,
+           it.window_end,
+           it.resource_id,
+           c.name AS resource_name,
+           b.customer_name
+    FROM public.install_tasks it
+    LEFT JOIN public.crews c ON c.id = it.resource_id
+    LEFT JOIN public.bids b  ON b.id::text = it.job_id::text
+    WHERE it.id = $1
+  `;
+  const r = await pool.query(sql, [id]);
+  return r.rows[0] || null;
+}
+
+async function logEvent(taskId, eventType, note, whenISO) {
+  try {
+    await pool.query(
+      `INSERT INTO public.task_events (task_id, task_table, event_type, note, at)
+       VALUES ($1,$2,$3,$4,$5::timestamptz)`,
+      [taskId, 'install_tasks', eventType, (note || "").trim() || null, whenISO || new Date().toISOString()]
+    );
+  } catch (e) {
+    // don't fail the endpoint if history insert fails
+    console.warn("[task_events] insert warn:", e.message);
+  }
+}
+
+/**
+ * Update status (only allowed values) and always bump updated_at.
+ * Returns { id, status, updated_at }
+ */
+async function updateTaskStatus({ id, status, note }) {
+  const row = await getTask(id);
+  if (!row) {
+    const e = new Error("task_not_found");
+    e.code = "TASK_NOT_FOUND";
+    throw e;
+  }
+
+  const sets = [`${COL_STATUS} = $2`, `${COL_UPDATED} = now()`];
+  const params = [id, status];
+
+  if (note && String(note).trim()) {
+    params.push(String(note).trim());
+    sets.push(`${COL_NOTES} = $${params.length}`);
+  }
+
+  const sql = `
+    UPDATE ${TABLE}
+       SET ${sets.join(", ")}
+     WHERE ${COL_ID} = $1
+     RETURNING ${COL_ID} AS id, ${COL_STATUS} AS status, ${COL_UPDATED} AS updated_at
+  `;
+
+  const r = await pool.query(sql, params);
+  return r.rows[0];
+}
+
+// Status mapping that **fits your CHECK constraint**
+const map = {
+  ontheway:  "in_progress", // 'en_route' not allowed in your DB
+  arrived:   "in_progress",
+  wip:       "in_progress",
+  complete:  "complete"
+};
+
+function fmtTaskSlack(task, eventType, note) {
+  const em = {
+    ontheway: "�",
+    arrived: "�",
+    wip: "�",
+    complete: "✅"
+  }[eventType] || "🔔";
+
+  const title = `${task.type || "task"} — ${task.name || "Unnamed"}`;
+  const crew  = task.resource_name || "Unassigned";
+  const cust  = task.customer_name || "Unknown Customer";
+  const start = task.window_start ? new Date(task.window_start).toLocaleString() : "—";
+  const end   = task.window_end ? new Date(task.window_end).toLocaleTimeString() : "—";
+  const link  = `${PUBLIC_BASE_URL}/team/task?id=${task.id}`;
+
+  const noteBlock = (note && note.trim())
+    ? `> _${note.trim()}_`
+    : "> _no note_";
+
+  const text = `${em} ${eventType.toUpperCase()} — Task #${task.id}: ${title}`;
+  const mrkdwn = [
+    `*${em} ${eventType.toUpperCase()}* — *Task #${task.id}*`,
+    `*${title}*`,
+    `*Customer:* ${cust}`,
+    `*When:* ${start} → ${end}`,
+    `*Crew:* ${crew}`,
+    noteBlock,
+    `<${link}|Open task>`
+  ].join("\n");
+
+  return { text, mrkdwn };
+}
+
+// Slack helper
+async function postToSlack({ taskId, eventType, note }) {
+  if (!slack || !SLACK_CHANNEL) return; // skip if not configured
+  try {
+    const task = await fetchTaskContext(taskId);
+    if (!task) {
+      console.warn("[Slack] task not found:", taskId);
+      return;
+    }
+
+    const { text, mrkdwn } = fmtTaskSlack(task, eventType, note);
+    
+    await slack.chat.postMessage({
+      channel: SLACK_CHANNEL,
+      text,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: mrkdwn
+          }
+        }
+      ],
+      unfurl_links: false
+    });
+  } catch (err) {
+    console.warn("[Slack] post failed:", err.message);
+  }
+}
+
+function wrap(handler) {
+  return async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: "bad_task_id" });
+      const body = req.body || {};
+      const note = (body.note || "").toString();
+      const when = body.when || new Date().toISOString();
+
+      const out = await handler({ id, note, when });
+      res.json(out);
+    } catch (e) {
+      if (e.code === "TASK_NOT_FOUND") return res.status(404).json({ error: "task_not_found" });
+      console.error("💥 TEAM TASKS ERROR 💥", e);
+      res.status(500).json({ error: "server_error", message: e.message || String(e) });
+    }
+  };
+}
+
+// ---- endpoints
+
+router.post("/api/tasks/:id/ontheway", express.json(), wrap(async ({ id, note, when }) => {
+  const status = map.ontheway;                       // -> 'in_progress'
+  const out = await updateTaskStatus({ id, status, note });
+  await logEvent(id, "ontheway", note, when);
+  await postToSlack({ taskId: id, eventType: "ontheway", note });
+  return { ok: true, id: out.id, status: out.status, updated_at: out.updated_at };
+}));
+
+router.post("/api/tasks/:id/arrived", express.json(), wrap(async ({ id, note, when }) => {
+  const status = map.arrived;                        // -> 'in_progress'
+  const out = await updateTaskStatus({ id, status, note });
+  await logEvent(id, "arrived", note, when);
+  await postToSlack({ taskId: id, eventType: "arrived", note });
+  return { ok: true, id: out.id, status: out.status, updated_at: out.updated_at };
+}));
+
+router.post("/api/tasks/:id/wip", express.json(), wrap(async ({ id, note, when }) => {
+  const status = map.wip;                            // -> 'in_progress'
+  const out = await updateTaskStatus({ id, status, note });
+  await logEvent(id, "wip", note, when);
+  await postToSlack({ taskId: id, eventType: "wip", note });
+  return { ok: true, id: out.id, status: out.status, updated_at: out.updated_at };
+}));
+
+router.post("/api/tasks/:id/complete", express.json(), wrap(async ({ id, note, when }) => {
+  const status = map.complete;                       // -> 'complete'
+  const out = await updateTaskStatus({ id, status, note });
+  await logEvent(id, "complete", note, when);
+  await postToSlack({ taskId: id, eventType: "complete", note });
+  return { ok: true, id: out.id, status: out.status, updated_at: out.updated_at };
+}));
+
+export default router;
