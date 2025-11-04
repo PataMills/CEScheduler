@@ -74,6 +74,7 @@ import availabilityRouter from "./routes/availability.js";
 import teamTasksRoutes from "./routes/teamTasks.js";
 import tasksSearchRoutes from "./routes/tasksSearch.js";
 import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "./slack.js";
+import autoTasksRouter from "./routes/autoTasks.js";
 
 // --- init app FIRST ---
 const app = express();
@@ -121,6 +122,7 @@ app.use(tasksSearchRoutes);
 
 app.use("/api/myday", mydayRouter);
 app.use("/api/tasks", tasksRouter);
+app.use("/api/tasks", autoTasksRouter);
 app.use("/api/schedule", scheduleRouter);
 app.use("/api/resources", resourcesRouter);
 app.use("/api/bids", bidsRouter);
@@ -1177,9 +1179,14 @@ app.get("/ops-inline", (_req, res) => {
 // Export helper for use in other modules
 export { saveDataUrlToFile };
 
-// Start
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`API running on http://localhost:${PORT}`);
-});
+// Export app for testing and external usage
+export default app;
+
+// Only start the server when not running tests
+if (process.env.NODE_ENV !== "test") {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`API running on http://localhost:${PORT}`);
+  });
+}
 

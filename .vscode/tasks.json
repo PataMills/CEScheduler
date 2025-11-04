@@ -1,0 +1,9 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "DB: migrate", "type": "shell", "command": "npm run db:migrate" },
+    { "label": "DB: seed", "type": "shell", "command": "npm run db:seed" },
+    { "label": "Test: API", "type": "shell", "command": "npm run test:api" },
+    { "label": "Test: UI", "type": "shell", "command": "npm run test:ui" }
+  ]
+}

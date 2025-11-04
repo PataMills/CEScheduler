@@ -1,6 +1,7 @@
 // routes/calendarApi.js
 import express from "express";
 import { pool } from "../db.js";
+import { requireAuth } from "./auth.js";
 
 const router = express.Router();
 
@@ -15,7 +16,8 @@ router.get("/events", async (req, res) => {
       SELECT t.id, t.type, t.name, t.window_start,
              COALESCE(t.window_end, t.window_start) AS window_end,
              COALESCE(t.status, 'scheduled') AS status,
-             a.resource_name
+        a.resource_name,
+        public.job_material_ready(t.job_id) AS material_ready
       FROM public.install_tasks t
       LEFT JOIN public.install_task_assignments a ON a.task_id = t.id
       WHERE t.window_start < $1::timestamptz
@@ -35,7 +37,8 @@ router.get("/events", async (req, res) => {
         task_id: r.id,
         task_type: r.type,
         status: r.status,
-        resource_name: r.resource_name || ''
+        resource_name: r.resource_name || '',
+        material_ready: !!r.material_ready
       }
     }));
 
@@ -49,13 +52,29 @@ router.get("/events", async (req, res) => {
 
 
 // PATCH /api/calendar/events/:id   body: { start, end? }
-router.patch("/events/:id", express.json(), async (req, res) => {
+router.patch("/events/:id", requireAuth, express.json(), async (req, res) => {
   const raw = String(req.params.id || "");
   const base = raw.includes(":") ? raw.split(":")[0] : raw;
   const id = Number(base);
-  const { start, end } = req.body || {};
+  const { start, end, force } = req.body || {};
   if (!id || !start) return res.status(400).json({ error: "bad_request" });
   try {
+    // Check material readiness
+    const chk = await pool.query(
+      `SELECT t.job_id, public.job_material_ready(t.job_id) AS material_ready
+         FROM public.install_tasks t WHERE t.id = $1`,
+      [id]
+    );
+    if (!chk.rowCount) return res.status(404).json({ error: "not_found" });
+    const ready = !!chk.rows[0].material_ready;
+    const isAdmin = (req.user?.role === 'admin' || req.user?.role === 'ops');
+    if (!ready && !isAdmin && !force) {
+      return res.status(409).json({
+        error: 'blocked_not_ready',
+        message: 'Materials not ready; ask purchasing or admin to override.'
+      });
+    }
+
     await pool.query(
       `UPDATE public.install_tasks
          SET window_start = $2::timestamptz,

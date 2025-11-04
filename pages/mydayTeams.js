@@ -71,16 +71,35 @@ export default function registerMyDayTeams(app){
 <script>
 const $ = s => document.querySelector(s);
 
-// -------- API helpers (existing routes)
-async function j(url, opts){ const r = await fetch(url, opts||{}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+// -------- Helper to build clean query strings (no empty params)
+function buildQuery(params) {
+  const parts = Object.entries(params)
+    .filter(([_, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
+    .join('&');
+  return parts ? '?' + parts : '';
+}
+
+// -------- API helpers (existing routes) - FIXED
+async function j(url, opts){ 
+  const r = await fetch(url, opts||{}); 
+  if(!r.ok) throw new Error('HTTP '+r.status); 
+  return r.json(); 
+}
+
 const api = {
-  day: (date, crew) => j('/api/myday?date='+encodeURIComponent(date)+'&crew='+encodeURIComponent(crew||'')),
+  day: (date, crew) => {
+    const params = { date };
+    const crewTrimmed = (crew || '').trim();
+    if (crewTrimmed) params.crew = crewTrimmed;
+    return j('/api/myday' + buildQuery(params));
+  },
   arrived: (id) => j('/api/tasks/'+id+'/arrived',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ note:'Arrived (tap)', when:new Date().toISOString() })}),
   complete: (id, body) => j('/api/tasks/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),
 };
 
 // -------- constants (shop origin default)
-const SHOP_ORIGIN = { addr: "3943 S 500 W, Salt Lake City, UT" }; // your default origin:contentReference[oaicite:3]{index=3}
+const SHOP_ORIGIN = { addr: "3943 S 500 W, Salt Lake City, UT" };
 
 // -------- origin store
 function saveOrigin(lat,lng){ localStorage.setItem('origin_lat',String(lat||'')); localStorage.setItem('origin_lng',String(lng||'')); }
@@ -100,7 +119,7 @@ function badge(status){
 function mapUrl(address){ return 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(address||''); }
 function telHref(num){ return 'tel:'+String(num||'').replace(/[^\\d+]/g,''); }
 function haversineKm(a,b){ if(!a||!b) return null; const R=6371,toRad=d=>d*Math.PI/180;const dLat=toRad(b.lat-a.lat),dLng=toRad(b.lng-a.lng);const s1=Math.sin(dLat/2),s2=Math.sin(dLng/2);const q=s1*s1+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2;return 2*R*Math.asin(Math.sqrt(q)); }
-function minutesFromKm(km, kmh=48.3){ return km? (km/kmh)*60 : null; } // ~30 mph
+function minutesFromKm(km, kmh=48.3){ return km? (km/kmh)*60 : null; }
 
 function flash(msg){
   const n=document.createElement('div');
@@ -152,14 +171,17 @@ async function load(){
   $('#status').textContent = 'Loading…';
   let rows = [];
   try {
-    rows = await api.day(date, crew);   // now respects ?crew= param:contentReference[oaicite:6]{index=6}
+    rows = await api.day(date, crew);
+    // Ensure we have an array
+    if (!Array.isArray(rows)) rows = [];
   } catch(e) {
+    console.error('Load error:', e);
     $('#status').textContent = 'Error: '+(e.message||e);
     return;
   }
 
   const host = $('#list'); host.innerHTML = '';
-  const origin = loadOrigin(); // else we'll just skip distance; shop default is for directions only
+  const origin = loadOrigin();
 
   rows.forEach(r=>{
     const card = document.createElement('div'); card.className='card';
@@ -177,8 +199,6 @@ async function load(){
 
     const btns = document.createElement('div'); btns.className='row';
 
-
-    // helpers to call API + refresh calendar
     async function postStatus(url, body){
       const resp = await fetch(url, {
         method: 'POST',
@@ -189,7 +209,6 @@ async function load(){
       if (window.teamCal?.refetchEvents) window.teamCal.refetchEvents();
     }
 
-    // Buttons on each card
     const bOTW = document.createElement('button'); bOTW.className='btn'; bOTW.textContent='On the way';
     bOTW.onclick = async () => {
       try { await postStatus('/api/tasks/'+r.task_id+'/ontheway'); state.innerHTML = badge('en_route'); flash('On the way ✓'); }
@@ -253,7 +272,7 @@ async function load(){
 
 document.getElementById('loadBtn').addEventListener('click', load);
 
-// --- Search button logic ---
+// --- Search button logic - FIXED ---
 document.getElementById('searchBtn').addEventListener('click', async ()=>{
   const date = $('#day').value;
   const crew = $('#crew').value;
@@ -262,7 +281,11 @@ document.getElementById('searchBtn').addEventListener('click', async ()=>{
 
   $('#status').textContent = 'Searching…';
   try {
-    const res = await j('/api/team/search?crew='+encodeURIComponent(crew||'')+'&q='+encodeURIComponent(q));
+    const params = { q };
+    const crewTrimmed = (crew || '').trim();
+    if (crewTrimmed) params.crew = crewTrimmed;
+    
+    const res = await j('/api/team/search' + buildQuery(params));
     let results = Array.isArray(res) ? res : [];
     
     // Client-side filter for installers: only show tasks assigned to their crew
@@ -278,7 +301,7 @@ document.getElementById('searchBtn').addEventListener('click', async ()=>{
       $('#status').textContent = 'No matches.';
       return;
     }
-    // Reuse card builder: show the found rows
+    
     results.forEach(r=>{
       const card = document.createElement('div'); card.className='card';
       const head = document.createElement('div'); head.className='row'; head.style.justifyContent='space-between';
@@ -338,28 +361,39 @@ document.getElementById('searchBtn').addEventListener('click', async ()=>{
     });
     $('#status').textContent = 'Found '+results.length+' match(es).';
   } catch(e) {
+    console.error('Search error:', e);
     $('#status').textContent = 'Search error: '+(e.message||e);
   }
 });
 
-// Fetch and populate crew/team dropdown
+// Fetch and populate crew/team dropdown - FIXED
 async function loadCrews() {
   const sel = document.getElementById('crew');
   sel.innerHTML = '<option value="">(All Crews)</option>';
   
   try {
     // Fetch current user to check role and crew assignment
-    const userResp = await j('/api/auth/me');
+    const userResp = await j('/api/auth/me').catch(() => ({}));
     const currentUser = userResp || {};
     const userRole = (currentUser.role || '').toLowerCase();
     const userCrew = currentUser.crew_name || '';
 
-    // Fetch available crews
-    const crews = await j('/api/crews');
-    (Array.isArray(crews)?crews:[]).filter(c => c.active !== false).forEach(c => {
+    // Fetch available crews - handle errors gracefully
+    let crews = [];
+    try {
+      const crewsResp = await fetch('/api/crews');
+      if (crewsResp.ok) {
+        const data = await crewsResp.json();
+        crews = Array.isArray(data) ? data : (data.rows || []);
+      }
+    } catch (e) {
+      console.error('Failed to load crews:', e);
+    }
+
+    crews.filter(c => c.active !== false).forEach(c => {
       const opt = document.createElement('option');
-      opt.value = c.name;
-      opt.textContent = c.name;
+      opt.value = c.name || '';
+      opt.textContent = c.name || '(unnamed)';
       sel.appendChild(opt);
     });
 
@@ -371,22 +405,21 @@ async function loadCrews() {
         sel.disabled = true;
         sel.style.opacity = '0.6';
         sel.style.cursor = 'not-allowed';
-        // Store for filtering
         window._userCrew = userCrew;
         window._userRole = userRole;
       } else {
-        // Installer has no crew assigned - show warning
         flash('⚠️ No crew assigned to your account. Contact admin.');
       }
     }
 
   } catch (e) {
+    console.error('loadCrews error:', e);
     sel.innerHTML = '<option value="">(Error loading crews)</option>';
   }
 }
 document.addEventListener('DOMContentLoaded', loadCrews);
 
-// FullCalendar for Team Hub (Week/Day view)
+// FullCalendar for Team Hub (Week/Day view) - FIXED
 (() => {
   const $ = (id)=>document.getElementById(id);
 
@@ -394,7 +427,6 @@ document.addEventListener('DOMContentLoaded', loadCrews);
   const LAST_TEAM_VIEW = 'team_cal_view';
 
   function baseTaskId(event) {
-    // support composite ids like "7614:Assembly Team"
     return (event.extendedProps && event.extendedProps.task_id)
       ? event.extendedProps.task_id
       : String(event.id || '').split(':')[0];
@@ -407,7 +439,6 @@ document.addEventListener('DOMContentLoaded', loadCrews);
     const lastView = localStorage.getItem(LAST_TEAM_VIEW);
     const initialView = (lastView === 'timeGridDay' || lastView === 'timeGridWeek') ? lastView : 'timeGridWeek';
 
-    // helpers
     const typeKey = (t)=>{
       t = String(t||'').toLowerCase();
       if (t.startsWith('manu')) return 'manufacturing';
@@ -419,12 +450,12 @@ document.addEventListener('DOMContentLoaded', loadCrews);
       return '';
     };
     const statusKey = (s)=>{
-  s = String(s||'').toLowerCase();
-  if (s === 'en_route' || s === 'on_the_way' || s === 'otw') return 'en_route';
-  if (s === 'in_progress' || s === 'arrived') return 'in_progress';
-  if (s === 'wip') return 'wip';
-  if (s === 'complete' || s === 'completed') return 'complete';
-  return 'scheduled';
+      s = String(s||'').toLowerCase();
+      if (s === 'en_route' || s === 'on_the_way' || s === 'otw') return 'en_route';
+      if (s === 'in_progress' || s === 'arrived') return 'in_progress';
+      if (s === 'wip') return 'wip';
+      if (s === 'complete' || s === 'completed') return 'complete';
+      return 'scheduled';
     };
 
     cal = new FullCalendar.Calendar(el, {
@@ -441,13 +472,24 @@ document.addEventListener('DOMContentLoaded', loadCrews);
 
       events: async (info, success, failure) => {
         try {
-          const params = new URLSearchParams({ start: info.startStr, end: info.endStr });
+          const params = { start: info.startStr, end: info.endStr };
           const crew = ($('crew')?.value || '').trim();
-          if (crew) params.set('crew', crew);
+          if (crew) params.crew = crew;
 
-          const r = await fetch('/api/calendar/events?' + params.toString());
+          const r = await fetch('/api/calendar/events' + buildQuery(params));
+          
+          // Handle non-200 responses
+          if (!r.ok) {
+            console.error('Calendar API error:', r.status);
+            success([]);
+            return;
+          }
+
           const d = await r.json();
-          let evts = d.events || d || [];
+          
+          // Ensure we have an array
+          let evts = Array.isArray(d) ? d : (d.events || d.rows || []);
+          if (!Array.isArray(evts)) evts = [];
 
           // client fallback for crew filter
           if (crew) {
@@ -468,10 +510,12 @@ document.addEventListener('DOMContentLoaded', loadCrews);
           });
 
           success(evts);
-        } catch (e) { failure(e); }
+        } catch (e) { 
+          console.error('Calendar events error:', e);
+          success([]);
+        }
       },
 
-      // add our color class per type + optional status class
       eventClassNames: (arg) => {
         const t = typeKey(arg.event.extendedProps.task_type || arg.event.title);
         const classes = [];
@@ -481,7 +525,6 @@ document.addEventListener('DOMContentLoaded', loadCrews);
         return classes;
       },
 
-      // inject a small status badge next to the title
       eventDidMount: (info) => {
         const s = statusKey(info.event.extendedProps.status);
         const badge = document.createElement('span');
@@ -502,7 +545,6 @@ document.addEventListener('DOMContentLoaded', loadCrews);
 
       datesSet: (arg) => {
         localStorage.setItem(LAST_TEAM_VIEW, arg.view.type);
-        // keep your date picker in sync with the calendar's current date
         try {
           const d = arg.view.currentStart;
           const mm = String(d.getMonth()+1).padStart(2,'0');
@@ -517,9 +559,7 @@ document.addEventListener('DOMContentLoaded', loadCrews);
     window.teamCal = cal;
   }
 
-  // tie existing controls to the calendar
   function wireCalendarControls() {
-    // 1) Load button should also move the calendar to that date
     const loadBtn = $('loadBtn');
     if (loadBtn) {
       loadBtn.addEventListener('click', () => {
@@ -531,7 +571,6 @@ document.addEventListener('DOMContentLoaded', loadCrews);
       });
     }
 
-    // 2) Changing crew should refetch calendar
     const crewSel = $('crew');
     if (crewSel) {
       crewSel.addEventListener('change', () => {
@@ -540,7 +579,6 @@ document.addEventListener('DOMContentLoaded', loadCrews);
     }
   }
 
-  // boot
   document.addEventListener('DOMContentLoaded', () => {
     initCalendar();
     wireCalendarControls();

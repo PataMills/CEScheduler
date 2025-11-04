@@ -6,7 +6,16 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "dev": "node app.js"
+    "dev": "node app.js",
+    "db:create": "node ./scripts/db-create.js",
+    "db:migrate": "node ./scripts/db-migrate.js",
+    "db:seed": "node ./scripts/db-seed.js",
+  "seed:min": "node ./scripts/db-seed-min.js",
+    "test": "jest --runInBand",
+    "test:api": "jest __tests__/api --runInBand",
+    "test:ui": "playwright test",
+    "lint": "eslint .",
+    "format": "prettier -w ."
   },
   "dependencies": {
     "@azure/identity": "^4.13.0",
@@ -24,5 +33,13 @@
     "pg": "^8.11.5",
     "puppeteer": "^24.24.0",
     "sharp": "^0.34.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/jest": "^29.5.14",
+    "cross-env": "^7.0.3",
+    "jest": "^29.7.0",
+    "start-server-and-test": "^2.1.2",
+    "supertest": "^7.1.4"
   }
 }
