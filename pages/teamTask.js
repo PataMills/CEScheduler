@@ -61,7 +61,7 @@ export default function registerTeamTaskPage(app){
   </div>
 
   <script>
-    // define once, before anything else
+    // define once, as early as possible
     window.esc = window.esc || function (v) {
       const s = String(v ?? '');
       return s.replace(/[&<>"']/g, c =>
@@ -72,6 +72,7 @@ export default function registerTeamTaskPage(app){
                     '&#39;'
       );
     };
+
     const esc = window.esc;
     const $ = (id) => document.getElementById(id);
 
@@ -89,7 +90,7 @@ export default function registerTeamTaskPage(app){
       main.insertAdjacentHTML('beforeend',
         '<div style="margin:12px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px">'
         + '<div style="font-weight:600;margin-bottom:6px">Can\'t load task</div>'
-        + '<div class="small" style="opacity:.9">' + esc(msg||'Unknown error') + '</div>'
+        + '<div class="small" style="opacity:.9">' + window.esc(msg||'Unknown error') + '</div>'
         + '</div>'
       );
     }
@@ -127,9 +128,9 @@ export default function registerTeamTaskPage(app){
 
         var ih = '';
         ih += '<div class="panel" style="margin:12px">';
-        ih +=   '<div style="font-weight:700;font-size:18px">' + esc(customer) + '</div>';
-        if (when) ih += '<div class="muted small" style="margin-top:4px">' + esc(when) + '</div>';
-        if (addr) ih += '<div class="muted small" style="margin-top:4px">' + esc(addr) + '</div>';
+  ih +=   '<div style="font-weight:700;font-size:18px">' + window.esc(customer) + '</div>';
+  if (when) ih += '<div class="muted small" style="margin-top:4px">' + window.esc(when) + '</div>';
+  if (addr) ih += '<div class="muted small" style="margin-top:4px">' + window.esc(addr) + '</div>';
         ih +=   '<div class="row" style="gap:8px;margin-top:12px">'
              +     '<button class="btn" id="bOTW">On the way</button>'
              +     '<button class="btn" id="bArr">Arrived</button>'
@@ -145,7 +146,7 @@ export default function registerTeamTaskPage(app){
 
         if (docs.length){
           var htmlDocs = docs.map(function(d){
-            return '<div><a target="_blank" href="' + esc(d.url||'#') + '">' + esc(d.name||d.file||'file') + '</a></div>';
+            return '<div><a target="_blank" href="' + window.esc(d.url||'#') + '">' + window.esc(d.name||d.file||'file') + '</a></div>';
           }).join('');
           var docsHost = document.getElementById('docs');
           if (docsHost) docsHost.innerHTML = htmlDocs;
@@ -176,13 +177,13 @@ export default function registerTeamTaskPage(app){
       const files = Array.isArray(data.files)?data.files:[];
       const hw = Array.isArray(data.hardware)?data.hardware:[];
 
-      const teamLine = teams.length ? teams.map(x=>esc(x.resource_name)).join(', ') : '';
+  const teamLine = teams.length ? teams.map(x=>window.esc(x.resource_name)).join(', ') : '';
 
       const f = (dt)=> dt ? (new Date(dt)).toLocaleString() : '';
 
       let html = '';
   html += '<div class="sec">';
-      html += '<h1>'+esc(t.type||'Task')+' — '+esc(t.name||'')+'</h1>';
+  html += '<h1>'+window.esc(t.type||'Task')+' — '+window.esc(t.name||'')+'</h1>';
   if (teamLine) html += '<div class="pill">'+teamLine+'</div>';
   html += '<div class="actions">'
     +   '<button class="btn" id="btn_otw">On the way</button>'
@@ -193,16 +194,16 @@ export default function registerTeamTaskPage(app){
       html += '<div class="kv" style="margin-top:10px">';
       html += '<div>Start</div><div><b>'+f(t.window_start)+'</b></div>';
       html += '<div>End</div><div><b>'+f(t.window_end||t.window_start)+'</b></div>';
-      if (t.phase_group) { html += '<div>Phase</div><div>'+esc(t.phase_group)+'</div>'; }
+  if (t.phase_group) { html += '<div>Phase</div><div>'+window.esc(t.phase_group)+'</div>'; }
       html += '</div>';
       html += '</div>';
 
       html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Contacts & Site</div>';
       html += '<div class="kv">';
-      html += '<div>Sales</div><div><b>'+esc(b.sales_person)+'</b> '+(b.sales_phone?(' — '+esc(b.sales_phone)):'')+'</div>';
-      html += '<div>Customer</div><div><b>'+esc(b.customer_name)+'</b> '+(b.customer_phone?(' — '+esc(b.customer_phone)):'')+'</div>';
-      html += '<div>Address</div><div>'+esc(b.address)+'</div>';
-      html += '<div>Access</div><div>'+esc(b.access)+'</div>';
+  html += '<div>Sales</div><div><b>'+window.esc(b.sales_person)+'</b> '+(b.sales_phone?(' — '+window.esc(b.sales_phone)):'')+'</div>';
+  html += '<div>Customer</div><div><b>'+window.esc(b.customer_name)+'</b> '+(b.customer_phone?(' — '+window.esc(b.customer_phone)):'')+'</div>';
+  html += '<div>Address</div><div>'+window.esc(b.address)+'</div>';
+  html += '<div>Access</div><div>'+window.esc(b.access)+'</div>';
       html += '</div></div>';
 
       html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Docs (Layouts, Renderings, Orders)</div>';
@@ -210,8 +211,8 @@ export default function registerTeamTaskPage(app){
         html += '<div style="opacity:.7">No documents.</div>';
       } else {
         for (const f of files) {
-          const label = esc(f.label || f.type || 'Document');
-          const url = esc(f.url||'#');
+          const label = window.esc(f.label || f.type || 'Document');
+          const url = window.esc(f.url||'#');
           html += '<a class="file" href="'+url+'" target="_blank" rel="noopener">'+label+'<span>↗</span></a>';
         }
       }
@@ -222,7 +223,7 @@ export default function registerTeamTaskPage(app){
         html += '<div style="opacity:.7">None listed.</div>';
       } else {
         for (const h of hw) {
-          const line = [h.kind,h.model,h.finish,h.location].filter(Boolean).map(esc).join(' — ');
+          const line = [h.kind,h.model,h.finish,h.location].filter(Boolean).map(window.esc).join(' — ');
           html += '<div>'+line+'</div>';
         }
       }
@@ -236,7 +237,7 @@ export default function registerTeamTaskPage(app){
       }
 
       if (t.notes){
-        html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Notes</div><div class="note">'+esc(t.notes)+'</div></div>';
+  html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Notes</div><div class="note">'+window.esc(t.notes)+'</div></div>';
       }
 
       if (offline) html += '<div class="sec" style="background:#0d1a0d;border-color:#1e3a1e">Offline copy</div>';
