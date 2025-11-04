@@ -76,6 +76,28 @@ export default function registerTeamTaskPage(app){
     const q = new URLSearchParams(location.search);
     const taskId = q.get('id');
 
+    // Fetch first URL that returns 2xx JSON
+    async function fetchAny(urls){
+      for (const u of urls){
+        try {
+          const r = await fetch(u, { credentials:'same-origin' });
+          if (r.ok) return await r.json();
+        } catch(e){ /* try next */ }
+      }
+      throw new Error('No task API responded (tried: '+urls.join(', ')+')');
+    }
+
+    // Visible error so the page doesn't look "stuck"
+    function showError(msg){
+      const host = document.getElementById('main') || document.getElementById('content') || document.body;
+      host.insertAdjacentHTML('beforeend',
+        '<div style="margin:12px 16px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px">'
+        + '<div style="font-weight:600;margin-bottom:6px">Can\'t load task</div>'
+        + '<div class="small" style="opacity:.9">' + esc(msg||'Unknown error') + '</div>'
+        + '</div>'
+      );
+    }
+
     // Load history events for this task
     async function loadHistory(limit = 50) {
       const historyEl = $('historyList');
@@ -105,33 +127,75 @@ export default function registerTeamTaskPage(app){
     }
 
     async function load(){
-      if(!taskId){ $('content').textContent='Missing task id.'; return; }
       try{
-        const r = await fetch('/api/tasks/team/'+encodeURIComponent(taskId));
-        if(!r.ok) throw new Error('HTTP '+r.status);
-        const d = await r.json();
-        try {
-          render(d);
-        } catch (renderErr) {
-          console.error('Render error:', renderErr);
-          $('content').innerHTML = '<div class="sec" style="color:#f66">Render error: '+esc(renderErr.message)+'</div>';
-          throw renderErr; // Re-throw to trigger offline fallback
+        if(!taskId) throw new Error('Missing ?id');
+        // Try common endpoints so a route mismatch won’t brick the page
+        const data = await fetchAny([
+          '/api/team/task?id=' + encodeURIComponent(taskId),
+          '/api/tasks/' + encodeURIComponent(taskId),
+          '/api/task/' + encodeURIComponent(taskId),
+          '/api/tasks/team/' + encodeURIComponent(taskId)
+        ]);
+
+        // Basic sanity so render() can’t explode on nulls
+        const t = data || {};
+        const customer = t.customer_name || t.job_name || t.name || ('Task '+taskId);
+        const when = (t.window_start && t.window_end)
+          ? (new Date(t.window_start).toLocaleString()+' – '+new Date(t.window_end).toLocaleString())
+          : (t.start || t.date || '');
+        const addr = t.address || t.site_address || '';
+
+        const main = document.getElementById('main') || document.getElementById('content') || document.body;
+        var ih = '';
+        ih += '<div class="sec" style="margin:12px">';
+        ih +=   '<div style="font-weight:700;font-size:18px">' + esc(customer) + '</div>';
+        ih +=   '<div class="muted small" style="margin-top:4px">' + esc(when) + '</div>';
+        if (addr) {
+          ih += '<div class="muted small" style="margin-top:4px">' + esc(addr) + '</div>';
         }
-        // save last payload for offline
-        localStorage.setItem('team_task_'+taskId, JSON.stringify(d));
-      }catch(e){
-        // try offline copy
-        const cached = localStorage.getItem('team_task_'+taskId);
-        if (cached){
-          try {
-            render(JSON.parse(cached), true);
-          } catch (renderErr) {
-            console.error('Offline render error:', renderErr);
-            $('content').innerHTML = '<div class="sec" style="color:#f66">Render error: '+esc(renderErr.message)+'</div>';
+        ih +=   '<div class="row" style="gap:8px;margin-top:12px">'
+             +     '<button class="btn" id="bOTW">On the way</button>'
+             +     '<button class="btn" id="bArr">Arrived</button>'
+             +     '<button class="btn" id="bWip">WIP</button>'
+             +     '<button class="btn" id="bDone">Complete</button>'
+             +   '</div>';
+        ih += '</div>';
+        ih += '<div class="sec" style="margin:12px">'
+           +   '<div style="font-weight:600">Documents</div>'
+           +   '<div id="docs" class="muted small" style="margin-top:6px">Loading…</div>'
+           + '</div>';
+        main.innerHTML = ih;
+
+        // Button wiring (errors won’t crash UI)
+        async function postStatus(path, body){
+          const r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(Object.assign({ when: new Date().toISOString() }, body||{})) });
+          if(!r.ok) throw new Error('HTTP '+r.status);
+        }
+  document.getElementById('bOTW').onclick = async()=>{ try{ await postStatus('/api/tasks/' + taskId + '/ontheway'); }catch(e){ showError(e.message); } };
+  document.getElementById('bArr').onclick = async()=>{ try{ await postStatus('/api/tasks/' + taskId + '/arrived'); }catch(e){ showError(e.message); } };
+  document.getElementById('bWip').onclick = async()=>{ try{ await postStatus('/api/tasks/' + taskId + '/wip', { note: '' }); }catch(e){ showError(e.message); } };
+        document.getElementById('bDone').onclick = ()=>{ try{ if (typeof openComplete === 'function') openComplete(); }catch{} };
+
+        // Docs list (tolerant)
+        const docsHost = document.getElementById('docs');
+        try{
+          const docs = Array.isArray(t.docs) ? t.docs : (await fetchAny([
+            '/api/tasks/' + taskId + '/docs',
+            '/api/task/' + taskId + '/docs'
+          ]));
+          if (Array.isArray(docs) && docs.length){
+            docsHost.innerHTML = docs.map(function(d){
+              return '<div><a href="' + esc(d.url||'#') + '" target="_blank">' + esc(d.name||d.file||'file') + '</a></div>';
+            }).join('');
+          } else {
+            docsHost.textContent = 'No documents.';
           }
-        } else {
-          $('content').innerHTML = '<div class="sec">Could not load task.</div>';
-        }
+        }catch{ docsHost.textContent = 'No documents.'; }
+
+      }catch(e){
+        console.error(e);
+        showError(e.message);
       }
     }
 
