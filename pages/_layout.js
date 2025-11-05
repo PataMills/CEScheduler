@@ -11,7 +11,6 @@ export function headCommon(title = '') {
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>${title ? title + ' – ' : ''}Cabinets Express</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📦%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/appbar.css?v=3">
   <link rel="stylesheet" href="/static/calendar.css?v=3">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css">
