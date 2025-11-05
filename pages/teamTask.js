@@ -10,6 +10,7 @@ export default function registerTeamTaskPage(app){
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
   <title>Task</title>
+  <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAE/wJ/lcVmVwAAAABJRU5ErkJggg==">
   <style>
     body{margin:0;background:#0f1320;color:#e9eefc;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif}
     .bar{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#111837;border-bottom:1px solid #222943;position:sticky;top:0;z-index:10}
@@ -61,149 +62,271 @@ export default function registerTeamTaskPage(app){
   </div>
 
   <script>
-// ===== SAFE BASELINE (ASCII only, no fancy quotes) =====
+(function(){
+  // Global escape helper (ASCII-only)
+  window.esc = window.esc || function(v){
+    var s = String(v == null ? "" : v);
+    return s.replace(/[&<>'"]/g, function(c){
+      return c === "&" ? "&amp;" :
+             c === "<" ? "&lt;" :
+             c === ">" ? "&gt;" :
+             c === "\"" ? "&quot;" :
+                            "&#39;";
+    });
+  };
 
-// 1) Global escape helper (works in module and non-module)
-window.esc = window.esc || function (v) {
-  var s = String(v == null ? "" : v);
-  return s.replace(/[&<>"']/g, function(c){
-    return c === "&" ? "&amp;" :
-           c === "<" ? "&lt;"  :
-           c === ">" ? "&gt;"  :
-           c === "\"" ? "&quot;" :
-                        "&#39;";
-  });
-};
+  var esc = window.esc;
+  var currentTaskId = null;
 
-// 2) Show any script error on the page (no silent "Loading...")
-window.addEventListener("error", function(e){
-  try {
-    var msg = (e && (e.message || (e.error && e.error.message))) || "Unknown error";
-    var host = document.getElementById("main") || document.body;
+  function byId(id){ return document.getElementById(id); }
+
+  function appendError(message){
+    var host = byId("main") || document.body;
     host.insertAdjacentHTML("beforeend",
       "<div style=\"margin:12px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px\">" +
-        "<div style=\"font-weight:600;margin-bottom:6px\">Script error</div>" +
-        "<div class=\"small\" style=\"opacity:.9\">" + window.esc(msg) + "</div>" +
+        "<div style=\"font-weight:600;margin-bottom:6px\">Problem</div>" +
+        "<div class=\"small\" style=\"opacity:.9\">" + esc(message || "Unexpected error") + "</div>" +
       "</div>"
     );
-  } catch (_) {}
-});
-
-// 3) Small helpers
-function $(sel){ return document.querySelector(sel); }
-function getParam(name){ return new URLSearchParams(location.search).get(name); }
-async function getJSON(url, opts){
-  var r = await fetch(url, Object.assign({ credentials: "same-origin" }, (opts||{})));
-  if (!r.ok) throw new Error(url + " -> HTTP " + r.status);
-  return r.json();
-}
-
-// 4) Try several endpoints so a route mismatch will not brick the page
-async function fetchTaskAny(id){
-  var list = [
-    "/api/team/task?id=" + encodeURIComponent(id),
-    "/api/tasks/" + encodeURIComponent(id),
-    "/api/task/" + encodeURIComponent(id)
-  ];
-  for (var i=0; i<list.length; i++){
-    try { return await getJSON(list[i]); } catch(_) {}
   }
-  throw new Error("No task API matched this id");
-}
 
-// 5) Render a simple, safe header + buttons
-function renderBasic(t){
-  var main = document.getElementById("main") || document.body;
-  var customer = t.customer_name || t.job_name || t.name || ("Task " + (t.task_id || ""));
-  var when = (t.window_start && t.window_end)
-    ? (new Date(t.window_start).toLocaleString() + " - " + new Date(t.window_end).toLocaleString())
-    : (t.start || t.date || "");
-  var addr = t.address || t.site_address || "";
-  var docs = Array.isArray(t.docs) ? t.docs : [];
+  window.addEventListener("error", function(evt){
+    try {
+      var msg = (evt && (evt.message || (evt.error && evt.error.message))) || "Unknown script error";
+      appendError("Script error: " + msg);
+    } catch (_) {}
+  });
 
-  var html = "";
-  html += "<div class=\"panel\" style=\"margin:12px\">";
-  html +=   "<div style=\"font-weight:700;font-size:18px\">" + window.esc(customer) + "</div>";
-  if (when) html += "<div class=\"muted small\" style=\"margin-top:4px\">" + window.esc(when) + "</div>";
-  if (addr) html += "<div class=\"muted small\" style=\"margin-top:4px\">" + window.esc(addr) + "</div>";
-  html +=   "<div class=\"row\" style=\"gap:8px;margin-top:12px\">";
-  html +=     "<button class=\"btn\" id=\"bOTW\">On the way</button>";
-  html +=     "<button class=\"btn\" id=\"bArr\">Arrived</button>";
-  html +=     "<button class=\"btn\" id=\"bWip\">WIP</button>";
-  html +=     "<button class=\"btn\" id=\"bDone\">Complete</button>";
-  html +=   "</div>";
-  html += "</div>";
+  function getParam(name){
+    return new URLSearchParams(location.search).get(name);
+  }
 
-  html += "<div class=\"panel\" style=\"margin:12px\">";
-  html +=   "<div style=\"font-weight:600\">Documents</div>";
-  html +=   "<div id=\"docs\" class=\"muted small\" style=\"margin-top:6px\">" + (docs.length ? "" : "No documents.") + "</div>";
-  html += "</div>";
+  async function fetchJSON(url, opts){
+    var response = await fetch(url, Object.assign({ credentials: "same-origin" }, opts || {}));
+    if (!response.ok) throw new Error(url + " HTTP " + response.status);
+    return response.json();
+  }
 
-  main.innerHTML = html;
+  async function fetchTaskAny(id){
+    var urls = [
+      "/api/team/task?id=" + encodeURIComponent(id),
+      "/api/tasks/" + encodeURIComponent(id),
+      "/api/task/" + encodeURIComponent(id)
+    ];
+    for (var i = 0; i < urls.length; i++){
+      try {
+        return await fetchJSON(urls[i]);
+      } catch (_) {}
+    }
+    throw new Error("No task API matched this id.");
+  }
 
-  if (docs.length) {
-    var list = docs.map(function(d){
-      return "<div><a target=\"_blank\" href=\"" + window.esc(d.url || "#") + "\">" + window.esc(d.name || d.file || "file") + "</a></div>";
+  function formatDate(dt){
+    if (!dt) return "";
+    try {
+      return new Date(dt).toLocaleString();
+    } catch (_) {
+      return String(dt);
+    }
+  }
+
+  function buildDocsList(docs){
+    return docs.map(function(doc){
+      var url = esc(doc && doc.url ? doc.url : "#");
+      var label = esc(doc && (doc.name || doc.file) ? (doc.name || doc.file) : "file");
+      return "<div><a target=\"_blank\" href=\"" + url + "\">" + label + "</a></div>";
     }).join("");
-    var docsHost = document.getElementById("docs");
-    if (docsHost) docsHost.innerHTML = list;
   }
 
-  async function postStatus(path, body){
-    var r = await fetch(path, {
+  function sendStatus(id, route, body){
+    if (!id) {
+      appendError("Missing task id for status update.");
+      return;
+    }
+    fetch("/api/tasks/" + encodeURIComponent(id) + "/" + route, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(Object.assign({ when: new Date().toISOString() }, (body||{})))
+      body: JSON.stringify(Object.assign({ when: new Date().toISOString() }, body || {}))
+    }).then(function(res){
+      if (!res.ok) throw new Error("HTTP " + res.status);
+    }).catch(function(err){
+      appendError("Status update failed: " + (err && err.message ? err.message : String(err)));
     });
-    if (!r.ok) throw new Error(path + " -> HTTP " + r.status);
   }
 
-  var id = t.task_id || t.id;
-  var el;
+  function renderBasic(task){
+    var main = byId("main") || document.body;
+    var customer = task.customer_name || task.job_name || task.name || ("Task " + (task.task_id || ""));
+    var when = "";
+    if (task.window_start && task.window_end) {
+      when = formatDate(task.window_start) + " - " + formatDate(task.window_end);
+    } else if (task.start) {
+      when = String(task.start);
+    } else if (task.date) {
+      when = String(task.date);
+    }
+    var addr = task.address || task.site_address || "";
+    var docs = Array.isArray(task.docs) ? task.docs : [];
 
-  el = document.getElementById("bOTW");
-  if (el) el.onclick = async function(){ try{ await postStatus("/api/tasks/" + id + "/ontheway"); }catch(e){ alert(e.message); } };
+    var html = "";
+    html += "<div class=\"panel\" style=\"margin:12px\">";
+    html +=   "<div style=\"font-weight:700;font-size:18px\">" + esc(customer) + "</div>";
+    if (when) html += "<div class=\"muted small\" style=\"margin-top:4px\">" + esc(when) + "</div>";
+    if (addr) html += "<div class=\"muted small\" style=\"margin-top:4px\">" + esc(addr) + "</div>";
+    html +=   "<div class=\"row\" style=\"gap:8px;margin-top:12px\">";
+    html +=     "<button class=\"btn\" id=\"bOTW\">On the way</button>";
+    html +=     "<button class=\"btn\" id=\"bArr\">Arrived</button>";
+    html +=     "<button class=\"btn\" id=\"bWip\">WIP</button>";
+    html +=     "<button class=\"btn\" id=\"bDone\">Complete</button>";
+    html +=   "</div>";
+    html += "</div>";
 
-  el = document.getElementById("bArr");
-  if (el) el.onclick = async function(){ try{ await postStatus("/api/tasks/" + id + "/arrived"); }catch(e){ alert(e.message); } };
+    html += "<div class=\"panel\" style=\"margin:12px\">";
+    html +=   "<div style=\"font-weight:600\">Documents</div>";
+    html +=   "<div id=\"docs\" class=\"muted small\" style=\"margin-top:6px\">" + (docs.length ? "" : "No documents.") + "</div>";
+    html += "</div>";
 
-  el = document.getElementById("bWip");
-  if (el) el.onclick = async function(){ try{ await postStatus("/api/tasks/" + id + "/wip", { note: "" }); }catch(e){ alert(e.message); } };
+    main.innerHTML = html;
 
-  el = document.getElementById("bDone");
-  if (el) el.onclick = function(){ try{ if (typeof openComplete === "function") openComplete(id); }catch(_){} };
-}
+    if (docs.length) {
+      var docsHost = byId("docs");
+      if (docsHost) docsHost.innerHTML = buildDocsList(docs);
+    }
 
-// 6) Page bootstrap
-async function boot(){
-  var main = document.getElementById("main") || document.body;
-  try{
-    var id = getParam("id");
-    if (!id) throw new Error("Missing ?id");
+    var id = task.task_id || task.id || currentTaskId;
+    currentTaskId = id;
+
+    var btn = byId("bOTW");
+    if (btn) btn.onclick = function(){ sendStatus(id, "ontheway"); };
+
+    btn = byId("bArr");
+    if (btn) btn.onclick = function(){ sendStatus(id, "arrived"); };
+
+    btn = byId("bWip");
+    if (btn) btn.onclick = function(){ sendStatus(id, "wip", { note: "" }); };
+
+    btn = byId("bDone");
+    if (btn) btn.onclick = function(){ openComplete(id); };
+  }
+
+  function openComplete(id){
+    currentTaskId = id || currentTaskId;
+    var modal = byId("completeModal");
+    if (!modal) return;
+    modal.hidden = false;
+    var note = byId("cm_note");
+    if (note) note.value = "";
+    var photos = byId("cm_photos");
+    if (photos) photos.value = "";
+    var hint = byId("cm_hint");
+    if (hint) hint.textContent = "Attach up to 15 photos (< 30 MB total).";
+  }
+
+  function closeComplete(){
+    var modal = byId("completeModal");
+    if (modal) modal.hidden = true;
+  }
+
+  function readFilesAsDataURLs(list, maxFiles, maxBytes){
+    var files = [];
+    if (list && typeof list.length === "number"){
+      for (var i = 0; i < list.length && files.length < maxFiles; i++){
+        files.push(list[i]);
+      }
+    }
+    var total = 0;
+    for (var j = 0; j < files.length; j++){
+      total += files[j].size || 0;
+    }
+    if (total > maxBytes) throw new Error("Photos exceed 30 MB total.");
+    return Promise.all(files.map(function(file){
+      return new Promise(function(resolve, reject){
+        var reader = new FileReader();
+        reader.onload = function(){ resolve({ name: file.name, type: file.type, size: file.size, data: reader.result }); };
+        reader.onerror = function(){ reject(new Error("Failed to read " + file.name)); };
+        reader.readAsDataURL(file);
+      });
+    }));
+  }
+
+  async function submitComplete(){
+    var id = currentTaskId;
+    if (!id) return;
+    try {
+      var noteEl = byId("cm_note");
+      var photosEl = byId("cm_photos");
+      var photos = await readFilesAsDataURLs(photosEl ? photosEl.files : [], 15, 30 * 1024 * 1024);
+      var payload = {
+        note: noteEl ? (noteEl.value || "") : "",
+        photos: photos,
+        when: new Date().toISOString()
+      };
+      var response = await fetch("/api/tasks/" + encodeURIComponent(id) + "/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      closeComplete();
+      alert("Task marked complete.");
+    } catch (err) {
+      alert("Complete failed: " + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  function wireCompleteModal(){
+    document.addEventListener("click", function(evt){
+      if (!evt || !evt.target) return;
+      if (evt.target.id === "cm_cancel") {
+        closeComplete();
+      }
+      if (evt.target.id === "cm_save") {
+        submitComplete();
+      }
+    });
+  }
+
+  async function syncOffline(){
+    try {
+      if ("serviceWorker" in navigator) {
+        await navigator.serviceWorker.register("/sw-team.js", { scope: "/" });
+      }
+      await fetch(location.href).catch(function(){});
+      if (currentTaskId) {
+        await fetch("/api/tasks/team/" + encodeURIComponent(currentTaskId)).catch(function(){});
+      }
+      alert("Sync complete. This page is cached for offline use.");
+    } catch (err) {
+      alert("Sync failed: " + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  function wireSyncButton(){
+    var btn = byId("btnSync");
+    if (btn) btn.addEventListener("click", syncOffline);
+  }
+
+  async function boot(){
+    var main = byId("main") || document.body;
     main.innerHTML = "<div class=\"muted\">Loading...</div>";
-
-    var taskObj = await fetchTaskAny(id);
-    renderBasic(taskObj);
-
-    // Optional: attempt extended view (non-blocking). Uncomment if you have it:
-    // try {
-    //   var ext = await getJSON("/api/tasks/team/" + encodeURIComponent(id));
-    //   // renderExtended(ext); // your richer renderer, if/when ready
-    // } catch(_) {}
-  }catch(e){
-    main.insertAdjacentHTML("beforeend",
-      "<div style=\"margin:12px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px\">" +
-        "<div style=\"font-weight:600;margin-bottom:6px\">Cannot load task</div>" +
-        "<div class=\"small\" style=\"opacity:.9\">" + window.esc(e.message || String(e)) + "</div>" +
-      "</div>"
-    );
-    console.error(e);
+    try {
+      var id = getParam("id");
+      if (!id) throw new Error("Missing ?id");
+      currentTaskId = id;
+      var taskObj = await fetchTaskAny(id);
+      renderBasic(taskObj);
+    } catch (err) {
+      appendError(err && err.message ? err.message : String(err));
+      console.error(err);
+    }
   }
-}
 
-document.addEventListener("DOMContentLoaded", boot);
-
-// ===== END SAFE BASELINE =====
+  document.addEventListener("DOMContentLoaded", function(){
+    wireCompleteModal();
+    wireSyncButton();
+    boot();
+  });
+})();
   </script>
 </body>
 </html>`);
