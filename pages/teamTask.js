@@ -42,15 +42,15 @@ export default function registerTeamTaskPage(app){
     <button id="btnSync" class="btn" style="background:#2e9157">Sync for offline</button>
   </div>
   <div id="main">
-    <div class="muted">Loading…</div>
-    <div class="muted small">Tip: tap a document to open it. After "Sync for offline", this page and documents will be available without signal.</div>
+  <div class="muted">Loading...</div>
+  <div class="muted small">Tip: tap a document to open it. After "Sync for offline", this page and documents will be available without signal.</div>
   </div>
 
   <!-- Complete modal -->
   <div id="completeModal" hidden>
     <div class="sheet">
       <div style="font-weight:700;margin-bottom:6px">Complete with note</div>
-      <textarea id="cm_note" rows="4" style="width:100%;padding:10px;border-radius:10px;border:1px solid #222943;background:#0f1320;color:#e9eefc" placeholder="Optional note…"></textarea>
+  <textarea id="cm_note" rows="4" style="width:100%;padding:10px;border-radius:10px;border:1px solid #222943;background:#0f1320;color:#e9eefc" placeholder="Optional note..."></textarea>
       <input id="cm_photos" type="file" accept="image/*" multiple style="margin-top:10px"/>
       <div id="cm_hint" style="opacity:.7;font-size:12px;margin-top:6px">Attach up to 15 photos (&lt; 30 MB total).</div>
       <div class="row" style="justify-content:flex-end;margin-top:10px">
@@ -66,7 +66,7 @@ export default function registerTeamTaskPage(app){
 // 1) Global escape helper (works in module and non-module)
 window.esc = window.esc || function (v) {
   var s = String(v == null ? "" : v);
-  return s.replace(/[&<>\"']/g, function(c){
+  return s.replace(/[&<>"']/g, function(c){
     return c === "&" ? "&amp;" :
            c === "<" ? "&lt;"  :
            c === ">" ? "&gt;"  :
