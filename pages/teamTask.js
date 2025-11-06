@@ -63,7 +63,19 @@ export default function registerTeamTaskPage(app){
 
   <script>
     // --- helpers ---
-    function esc(v){ var s=String(v==null?'':v); return s.replace(/[&<>"']/g,function(c){ return c=='&'?'&amp;':c=='<'?'&lt;':c=='>'?'&gt;':c=='"'?'&quot;':'&#39;'; }); }
+    function esc(v) {
+      var s = String(v == null ? '' : v);
+      return s.replace(/[&<>"']/g, function(c) {
+        switch (c) {
+          case '&': return '&amp;';
+          case '<': return '&lt;';
+          case '>': return '&gt;';
+          case '"': return '&quot;';
+          case "'": return '&#39;';
+          default: return c;
+        }
+      });
+    }
     var qs = new URLSearchParams(location.search);
     var taskId = qs.get('id');
     var main = document.getElementById('main');
