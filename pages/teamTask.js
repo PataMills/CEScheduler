@@ -68,6 +68,11 @@ export default function registerTeamTaskPage(app){
     var taskId = qs.get('id');
     var main = document.getElementById('main');
 
+    // tiny helpers
+    const $ = (id) => document.getElementById(id);
+    // no-op history for now (prevents ReferenceErrors)
+    const loadHistory = async (_limit)=>{};
+
     function showError(msg){
       main.insertAdjacentHTML('beforeend',
         '<div style="margin:12px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px">'
@@ -224,7 +229,7 @@ export default function registerTeamTaskPage(app){
 
       if (offline) html += '<div class="sec" style="background:#0d1a0d;border-color:#1e3a1e">Offline copy</div>';
 
-      $('content').innerHTML = html;
+      main.innerHTML = html;
 
       // wire buttons
       const post = async (route, body)=>{
@@ -284,7 +289,7 @@ export default function registerTeamTaskPage(app){
     document.addEventListener('click', (e)=>{ if (e.target && e.target.id==='cm_save') cmSave(); });
 
     // Offline caching (PWA-lite)
-    $('btnSync').addEventListener('click', async ()=>{
+    document.getElementById('btnSync').addEventListener('click', async ()=>{
       try{
         // register SW
         if ('serviceWorker' in navigator) {
