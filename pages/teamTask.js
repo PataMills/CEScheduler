@@ -62,22 +62,250 @@ export default function registerTeamTaskPage(app){
   </div>
 
   <script>
-(function() {
-  // Global escape helper (ASCII-only)
-  window.esc = window.esc || function(v) {
-    var s = String(v == null ? "" : v);
-    return s.replace(/[&<>"']/g, function(c) {
-      switch (c) {
-        case "&": return "&amp;";
-        case "<": return "&lt;";
-        case ">": return "&gt;";
-        case '"': return "&quot;";
-        case "'": return "&#39;";
-        default: return c;
+    // --- helpers ---
+    function esc(v){ var s=String(v==null?'':v); return s.replace(/[&<>"']/g,function(c){ return c=='&'?'&amp;':c=='<'?'&lt;':c=='>'?'&gt;':c=='"'?'&quot;':'&#39;'; }); }
+    var qs = new URLSearchParams(location.search);
+    var taskId = qs.get('id');
+    var main = document.getElementById('main');
+
+    function showError(msg){
+      main.insertAdjacentHTML('beforeend',
+        '<div style="margin:12px;padding:10px;border:1px solid #933;background:#2a0f13;color:#ffd7d7;border-radius:8px">'
+        + '<div style="font-weight:600;margin-bottom:6px">Can\'t load task</div>'
+        + '<div class="small" style="opacity:.9">' + esc(msg||'Unknown error') + '</div>'
+        + '</div>'
+      );
+    }
+
+    async function fetchJSON(u){
+      var r = await fetch(u, { credentials:'same-origin' });
+      if(!r.ok) throw new Error(u+' \u2192 HTTP '+r.status);
+      return r.json();
+    }
+
+    async function load(){
+      try{
+        if(!taskId) throw new Error('Missing ?id');
+        // Try the likely endpoints in order
+        var t = await (async function(){
+          var urls = [
+            '/api/team/task?id=' + encodeURIComponent(taskId),
+            '/api/tasks/' + encodeURIComponent(taskId),
+            '/api/task/' + encodeURIComponent(taskId)
+          ];
+          for (var i=0;i<urls.length;i++){
+            var u = urls[i];
+            try { return await fetchJSON(u); } catch(_) {}
+          }
+          throw new Error('No task API matched this id.');
+        })();
+
+        // Normalize fields so render never explodes
+        var customer = t.customer_name || t.job_name || t.name || ('Task ' + taskId);
+        var when = (t.window_start && t.window_end)
+          ? (new Date(t.window_start).toLocaleString()+' \u2013 '+new Date(t.window_end).toLocaleString())
+          : (t.start || t.date || '');
+        var addr = t.address || t.site_address || '';
+        var docs = Array.isArray(t.docs) ? t.docs : [];
+
+        var ih = '';
+        ih += '<div class="panel" style="margin:12px">';
+        ih +=   '<div style="font-weight:700;font-size:18px">' + esc(customer) + '</div>';
+        if (when) ih += '<div class="muted small" style="margin-top:4px">' + esc(when) + '</div>';
+        if (addr) ih += '<div class="muted small" style="margin-top:4px">' + esc(addr) + '</div>';
+        ih +=   '<div class="row" style="gap:8px;margin-top:12px">'
+             +     '<button class="btn" id="bOTW">On the way</button>'
+             +     '<button class="btn" id="bArr">Arrived</button>'
+             +     '<button class="btn" id="bWip">WIP</button>'
+             +     '<button class="btn" id="bDone">Complete</button>'
+             +   '</div>';
+        ih += '</div>';
+        ih += '<div class="panel" style="margin:12px">'
+           +   '<div style="font-weight:600">Documents</div>'
+           +   '<div id="docs" class="muted small" style="margin-top:6px">' + (docs.length? '' : 'No documents.') + '</div>'
+           + '</div>';
+        main.innerHTML = ih;
+
+        if (docs.length){
+          var htmlDocs = docs.map(function(d){
+            return '<div><a target="_blank" href="' + esc(d.url||'#') + '">' + esc(d.name||d.file||'file') + '</a></div>';
+          }).join('');
+          var docsHost = document.getElementById('docs');
+          if (docsHost) docsHost.innerHTML = htmlDocs;
+        }
+
+        async function postStatus(path, body){
+          var r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(Object.assign({ when: new Date().toISOString() }, body||{})) });
+          if(!r.ok) throw new Error('HTTP '+r.status);
+        }
+        document.getElementById('bOTW').onclick = async function(){ try{ await postStatus('/api/tasks/' + taskId + '/ontheway'); }catch(e){ showError(e.message); } };
+        document.getElementById('bArr').onclick = async function(){ try{ await postStatus('/api/tasks/' + taskId + '/arrived'); }catch(e){ showError(e.message); } };
+        document.getElementById('bWip').onclick = async function(){ try{ await postStatus('/api/tasks/' + taskId + '/wip', { note:'' }); }catch(e){ showError(e.message); } };
+        document.getElementById('bDone').onclick = function(){ try{ if (typeof openComplete === 'function') openComplete(); }catch(_){} };
+
+      }catch(e){
+        console.error(e);
+        showError(e.message);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', load);
+
+    function render(data, offline){
+      const t = data.task || {};
+      const b = data.bid  || {};
+      const teams = Array.isArray(data.teams)?data.teams:[];
+      const files = Array.isArray(data.files)?data.files:[];
+      const hw = Array.isArray(data.hardware)?data.hardware:[];
+
+      const teamLine = teams.length ? teams.map(x=>esc(x.resource_name)).join(', ') : '';
+
+      const f = (dt)=> dt ? (new Date(dt)).toLocaleString() : '';
+
+      let html = '';
+  html += '<div class="sec">';
+      html += '<h1>'+esc(t.type||'Task')+' — '+esc(t.name||'')+'</h1>';
+  if (teamLine) html += '<div class="pill">'+teamLine+'</div>';
+  html += '<div class="actions">'
+    +   '<button class="btn" id="btn_otw">On the way</button>'
+    +   '<button class="btn" id="btn_arr">Arrived</button>'
+    +   '<button class="btn" id="btn_wip">WIP</button>'
+    +   '<button class="btn" id="btn_done">Complete</button>'
+    + '</div>';
+      html += '<div class="kv" style="margin-top:10px">';
+      html += '<div>Start</div><div><b>'+f(t.window_start)+'</b></div>';
+      html += '<div>End</div><div><b>'+f(t.window_end||t.window_start)+'</b></div>';
+      if (t.phase_group) { html += '<div>Phase</div><div>'+esc(t.phase_group)+'</div>'; }
+      html += '</div>';
+      html += '</div>';
+
+      html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Contacts & Site</div>';
+      html += '<div class="kv">';
+      html += '<div>Sales</div><div><b>'+esc(b.sales_person)+'</b> '+(b.sales_phone?(' — '+esc(b.sales_phone)):'')+'</div>';
+      html += '<div>Customer</div><div><b>'+esc(b.customer_name)+'</b> '+(b.customer_phone?(' — '+esc(b.customer_phone)):'')+'</div>';
+      html += '<div>Address</div><div>'+esc(b.address)+'</div>';
+      html += '<div>Access</div><div>'+esc(b.access)+'</div>';
+      html += '</div></div>';
+
+      html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Docs (Layouts, Renderings, Orders)</div>';
+      if (!files.length) {
+        html += '<div style="opacity:.7">No documents.</div>';
+      } else {
+        for (const f of files) {
+          const label = esc(f.label || f.type || 'Document');
+          const url = esc(f.url||'#');
+          html += '<a class="file" href="'+url+'" target="_blank" rel="noopener">'+label+'<span>↗</span></a>';
+        }
+      }
+      html += '</div>';
+
+      html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Hardware / Handles</div>';
+      if (!hw.length) {
+        html += '<div style="opacity:.7">None listed.</div>';
+      } else {
+        for (const h of hw) {
+          const line = [h.kind,h.model,h.finish,h.location].filter(Boolean).map(esc).join(' — ');
+          html += '<div>'+line+'</div>';
+        }
+      }
+      html += '</div>';
+
+      // History section
+      if (b.id) {
+        html += '<details class="sec" style="margin-bottom:12px"><summary style="font-weight:700;font-size:16px">History</summary>';
+        html += '<div id="historyList" style="margin-top:10px"></div>';
+        html += '</details>';
+      }
+
+      if (t.notes){
+        html += '<div class="sec"><div style="font-weight:700;margin-bottom:6px">Notes</div><div class="note">'+esc(t.notes)+'</div></div>';
+      }
+
+      if (offline) html += '<div class="sec" style="background:#0d1a0d;border-color:#1e3a1e">Offline copy</div>';
+
+      $('content').innerHTML = html;
+
+      // wire buttons
+      const post = async (route, body)=>{
+        const r = await fetch('/api/tasks/'+encodeURIComponent(taskId)+'/'+route, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(Object.assign({ when:new Date().toISOString() }, body||{}))
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.message || j.error || 'server_error');
+        return j;
+      };
+
+      const flash = (msg)=>{ const n=document.createElement('div'); n.textContent=msg; Object.assign(n.style,{position:'fixed',left:'50%',top:'16px',transform:'translateX(-50%)',background:'#111',color:'#fff',padding:'8px 12px',borderRadius:'9999px',zIndex:99999,boxShadow:'0 8px 24px rgba(0,0,0,.15)'}); document.body.appendChild(n); setTimeout(()=>n.remove(),1400); };
+
+      const updateStatusBadge = (text)=>{ const badge=$('statusBadge'); if(badge) badge.textContent=text; };
+
+      const btnOTW=$('btn_otw'), btnArr=$('btn_arr'), btnWip=$('btn_wip'), btnDone=$('btn_done');
+      if (btnOTW) btnOTW.onclick = async ()=>{ try{ const j = await post('ontheway'); flash('On the way ✓'); updateStatusBadge('In progress • on the way'); await loadHistory(20); }catch(e){ flash('Failed: ' + (e.message||'Error')); } };
+      if (btnArr) btnArr.onclick = async ()=>{ try{ const j = await post('arrived', { note:'' }); flash('Arrived ✓'); updateStatusBadge('In progress • arrived'); await loadHistory(20); }catch(e){ flash('Failed: ' + (e.message||'Error')); } };
+      if (btnWip) btnWip.onclick = async ()=>{ const note=prompt('Note (optional)')||''; try{ const j = await post('wip', { note }); flash('WIP ✓'); updateStatusBadge('In progress • working'); await loadHistory(20); }catch(e){ flash('Failed: ' + (e.message||'Error')); } };
+      if (btnDone) btnDone.onclick = ()=> openComplete();
+      
+      // Initial history load
+      loadHistory();
+    }
+
+    // Complete modal logic
+    function openComplete(){ $('completeModal').hidden=false; $('cm_note').value=''; $('cm_photos').value=''; $('cm_hint').textContent='Attach up to 15 photos (< 30 MB total).'; }
+    function closeComplete(){ $('completeModal').hidden=true; }
+    document.addEventListener('click', (e)=>{
+      if (e.target && e.target.id === 'cm_cancel') closeComplete();
+    });
+
+    function readFilesAsDataURLs(fileList, {maxFiles=15, maxTotalBytes=30*1024*1024}={}){
+      const files = Array.from(fileList||[]).slice(0,maxFiles);
+      const total = files.reduce((s,f)=>s+f.size,0);
+      if (total > maxTotalBytes) throw new Error('Photos > 30 MB total');
+      return Promise.all(files.map(f=>new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res({name:f.name,type:f.type,size:f.size,data:r.result}); r.onerror=rej; r.readAsDataURL(f);}))); }
+
+    const cmPhotosEl = ()=>document.getElementById('cm_photos');
+    const cmNoteEl = ()=>document.getElementById('cm_note');
+    const cmSave = async ()=>{
+      try {
+        const photos = await readFilesAsDataURLs(cmPhotosEl().files || []);
+        const note = cmNoteEl().value || '';
+        const r = await fetch('/api/tasks/'+encodeURIComponent(taskId)+'/complete', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ note, photos, when:new Date().toISOString() })
+        });
+        if (!r.ok) throw new Error('HTTP '+r.status);
+        closeComplete();
+        alert('Completed ✓');
+        await loadHistory(20);
+      } catch(e) {
+        alert('Complete failed: '+(e&&e.message||e));
+      }
+    };
+    document.addEventListener('click', (e)=>{ if (e.target && e.target.id==='cm_save') cmSave(); });
+
+    // Offline caching (PWA-lite)
+    $('btnSync').addEventListener('click', async ()=>{
+      try{
+        // register SW
+        if ('serviceWorker' in navigator) {
+          await navigator.serviceWorker.register('/sw-team.js', { scope: '/' });
+        }
+        // warm cache: page + API + files
+        await fetch(location.href).catch(()=>{});
+        if (taskId){
+          const r = await fetch('/api/tasks/team/'+taskId); const d = await r.json();
+          const files = Array.isArray(d.files)?d.files:[];
+          await Promise.all(files.map(x => x.url ? fetch(x.url).catch(()=>{}) : null));
+          alert('Synced. You can open this page offline.');
+        } else {
+          alert('Synced page.');
+        }
+      }catch(e){
+        alert('Sync failed: '+e.message);
       }
     });
-  };
-})();
+
+    load();
   </script>
 </body>
 </html>`);
