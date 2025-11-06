@@ -66,12 +66,15 @@ export default function registerTeamTaskPage(app){
   // Global escape helper (ASCII-only)
   window.esc = window.esc || function(v){
     var s = String(v == null ? "" : v);
-    return s.replace(/[&<>'"]/g, function(c){
-      return c === "&" ? "&amp;" :
-             c === "<" ? "&lt;" :
-             c === ">" ? "&gt;" :
-             c === "\"" ? "&quot;" :
-                            "&#39;";
+    return s.replace(/[&<>\"']/g, function(c){
+      switch (c) {
+        case "&": return "&amp;";
+        case "<": return "&lt;";
+        case ">": return "&gt;";
+        case '"': return "&quot;";
+        case "'": return "&#39;";
+        default: return c;
+      }
     });
   };
 
