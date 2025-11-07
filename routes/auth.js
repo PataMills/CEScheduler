@@ -3,8 +3,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
-import pkg from "pg";
-const { Pool } = pkg;
+import { pool } from "../db.js";
 
 const router = express.Router();
 
@@ -13,9 +12,6 @@ const FALLBACK_EMAIL = process.env.AUTH_EMAIL || "";
 const FALLBACK_HASH  = process.env.AUTH_HASH  || "";
 const JWT_SECRET     = process.env.JWT_SECRET || "dev-secret";
 const FORCE_SECURE   = !!Number(process.env.FORCE_SECURE_COOKIES || 0);
-
-// --- DB connection ---
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 // helpers
 // Choose landing page by role

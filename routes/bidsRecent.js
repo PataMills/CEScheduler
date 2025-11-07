@@ -1,11 +1,9 @@
 // routes/bidsRecent.js
 import express from "express";
-import pkg from "pg";
+import { pool } from "../db.js";
 import { requireAuth } from "./auth.js";
-const { Pool } = pkg;
 
 const router = express.Router();
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 router.get("/recent", requireAuth, async (_req, res) => {
   const sql = `
@@ -16,13 +14,12 @@ router.get("/recent", requireAuth, async (_req, res) => {
 `;
 
   try {
-  const { rows } = await pool.query(sql);
-  res.json({ ok:true, bids: rows });
-} catch (e) {
-  console.error("dashboard recent error:", e.message);
-  res.json({ ok:true, bids: [] }); // temporary fallback
-}
-
+    const { rows } = await pool.query(sql);
+    res.json({ ok: true, bids: rows });
+  } catch (e) {
+    console.error("dashboard recent error:", e.message);
+    res.json({ ok: true, bids: [] }); // temporary fallback
+  }
 });
 
 export default router;

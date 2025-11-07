@@ -1,12 +1,11 @@
 // routes/adminUsers.js
 import express from "express";
 import bcrypt from "bcrypt";
+import { pool } from "../db.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
 import { requireAuth } from "./auth.js";
-import pkg from "pg";
-const { Pool } = pkg;
 
 const router = express.Router();
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 function requireAdmin(req, res, next) {
   if (req.user?.role !== "admin") return res.status(403).json({ error: "forbidden" });
@@ -14,15 +13,15 @@ function requireAdmin(req, res, next) {
 }
 
 // List users
-router.get("/", requireAuth, requireAdmin, async (_req, res) => {
+router.get("/", requireAuth, requireAdmin, asyncHandler(async (_req, res) => {
   const { rows } = await pool.query(
     "SELECT id, name, email, role, is_active, created_at FROM users ORDER BY id DESC"
   );
   res.json({ ok: true, users: rows });
-});
+}));
 
 // Create user
-router.post("/", requireAuth, requireAdmin, express.json(), async (req, res) => {
+router.post("/", requireAuth, requireAdmin, express.json(), asyncHandler(async (req, res) => {
   const { name, email, role, password } = req.body || {};
   if (!name || !email || !role || !password) return res.status(400).json({ ok:false, error:"missing_fields" });
   if (!["admin","sales","ops"].includes(role)) return res.status(400).json({ ok:false, error:"bad_role" });
@@ -37,10 +36,10 @@ router.post("/", requireAuth, requireAdmin, express.json(), async (req, res) => 
     const dup = e?.code === "23505";
     res.status(dup ? 409 : 500).json({ ok:false, error: dup ? "email_in_use" : "create_failed" });
   }
-});
+}));
 
 // Reset password
-router.patch("/:id/password", requireAuth, requireAdmin, express.json(), async (req, res) => {
+router.patch("/:id/password", requireAuth, requireAdmin, express.json(), asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { password } = req.body || {};
   if (!password) return res.status(400).json({ ok:false, error:"missing_password" });
@@ -50,10 +49,10 @@ router.patch("/:id/password", requireAuth, requireAdmin, express.json(), async (
     [hash, id]
   );
   res.json({ ok:true });
-});
+}));
 
 // Activate/Deactivate user
-router.patch("/:id/status", requireAuth, requireAdmin, express.json(), async (req, res) => {
+router.patch("/:id/status", requireAuth, requireAdmin, express.json(), asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { is_active } = req.body || {};
   if (typeof is_active !== "boolean") return res.status(400).json({ ok:false, error:"bad_status" });
@@ -62,6 +61,6 @@ router.patch("/:id/status", requireAuth, requireAdmin, express.json(), async (re
     [is_active, id]
   );
   res.json({ ok:true });
-});
+}));
 
 export default router;

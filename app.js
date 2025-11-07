@@ -1,17 +1,17 @@
 ﻿// app.js â€” minimal Express server + API routes + test pages
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
+import cookieParser from "cookie-parser";
 import registerSalesIntake from "./pages/salesIntake.js";
 import scheduleRouter from "./routes/schedule.js";
 import resourcesRouter from "./routes/resources.js";
 import mydayRouter from "./routes/myday.js";
 import tasksRouter from "./routes/tasks.js";
 import registerBids from "./routes/bids.js";
-// optionsRouter removed
-import 'dotenv/config';
 import registerPurchasing from "./routes/purchasing.js";
 import registerPurchasingWorklist from "./pages/purchasingWorklist.js";
 import registerBidsInline from "./pages/bidsInline.js";
@@ -22,19 +22,15 @@ import registerSalesQuote from "./pages/salesQuote.js";
 import registerQuoteAck from "./pages/quoteAck.js";
 import registerOpsDayBoard from "./pages/opsDayBoard.js";
 import registerMyDayTeams from "./pages/mydayTeams.js";
-// import serviceRouter from "./routes/service.js";
 import registerCreateService from "./pages/createService.js";
 import adminContentRouter from "./routes/adminContent.js";
 import registerAdminContent from "./pages/adminContent.js";
-import { ensureDepositItemId } from './services/qbo.js';
-import registerQboRoutes from './routes/qbo.js';
+import { ensureDepositItemId } from "./services/qbo.js";
+import registerQboRoutes from "./routes/qbo.js";
 import registerLoginPage from "./pages/login.js";
 import registerRegisterPage from "./pages/register.js";
 import authRouter, { requireAuthPage, requireRolePage } from "./routes/auth.js";
-import cookieParser from "cookie-parser";
-import { requireAuth } from "./routes/auth.js";
 import adminRouter from "./routes/admin.js";
-import adminUsersRouter from "./routes/adminUsers.js";
 import registerAdminUsersPage from "./pages/adminUsers.js";
 import registerSalesHomePage from "./pages/salesHome.js";
 import searchRouter from "./routes/search.js";
@@ -42,12 +38,11 @@ import bidsRecentRouter from "./routes/bidsRecent.js";
 import registerCalendarPage from "./pages/calendar.js";
 import calendarApiRouter from "./routes/calendarApi.js";
 import rescheduleRouter from "./routes/reschedule.js";
-import salesRouter from "./routes/sales.js"; 
+import salesRouter from "./routes/sales.js";
 import registerSalesDetails from "./pages/salesDetails.js";
 import registerAdminLeadTimes from "./pages/adminLeadTimes.js";
 import registerPurchasingPage from "./pages/purchasing.js";
 import registerAdminHub from "./pages/adminHub.js";
-import pool from "./db.js";
 import registerSchedulePage from "./pages/schedule.js";
 import jobsRouter from "./routes/jobs.js";
 import registerGanttPage from "./pages/gantt.js";
@@ -76,18 +71,11 @@ import tasksSearchRoutes from "./routes/tasksSearch.js";
 import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "./slack.js";
 import autoTasksRouter from "./routes/autoTasks.js";
 import teamTaskApi from "./routes/teamTaskApi.js";
-import { query } from "./db.js";
-app.get("/api/health/db", async (req, res) => {
-  try {
-    const r = await query("SELECT 1 as ok");
-    res.json({ ok: r.rows[0].ok === 1 });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
+import { pool, query } from "./db.js";
 
 // --- init app FIRST ---
 const app = express();
+app.use(express.json({ limit: "35mb" }));
 
 const skipDbBootstrap = process.env.SKIP_DB_BOOTSTRAP === "1";
 
@@ -103,6 +91,15 @@ if (!skipDbBootstrap) {
       console.error("DB connection failed:", err.message);
     });
 }
+
+app.get("/api/health/db", async (req, res) => {
+  try {
+    const r = await query("SELECT 1 as ok");
+    res.json({ ok: r.rows[0].ok === 1 });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 registerBids(app);
 registerPurchasing(app);
@@ -129,7 +126,6 @@ if (process.env.NODE_ENV === 'production') { app.use((req, res, next) => { if (r
 
 // --- middleware ---
 app.use(cors());
-app.use(express.json({ limit: "35mb" }));
 app.use((req, res, next) => {
   console.log(`[REQ] ${req.method} ${req.originalUrl}`);
   if (req.method !== 'GET') {
@@ -173,7 +169,6 @@ app.get('/api/files', async (req, res) => {
     res.status(500).json({ error: 'db_error', detail: e.message });
   }
 });
-import serviceRouter from "./routes/service.js";
 app.use("/api/admin-content", adminContentRouter);
 app.use('/qbo/webhook', express.raw({ type: '*/*' }));
 app.use("/api/auth", authRouter);
@@ -1201,6 +1196,13 @@ app.get("/ops-inline", (_req, res) => {
   </script>
 </body>
 </html>`);
+});
+
+// --- centralized error handler ---
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: err.message || "Internal Server Error" });
 });
 
 // Export helper for use in other modules

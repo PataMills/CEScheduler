@@ -1,11 +1,9 @@
 // routes/search.js
 import express from "express";
-import pkg from "pg";
+import { pool } from "../db.js";
 import { requireAuth } from "./auth.js"; // API-style guard
-const { Pool } = pkg;
 
 const router = express.Router();
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 // Simple bids search (extend later to customers/builders)
 router.get("/", requireAuth, async (req, res) => {

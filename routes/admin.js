@@ -1,9 +1,7 @@
 // routes/admin.js
 import express from "express";
+import { pool } from "../db.js";
 import { requireAuth } from "./auth.js";
-import pkg from "pg";
-const { Pool } = pkg;
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 const router = express.Router();
 
