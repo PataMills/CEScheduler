@@ -1,6 +1,6 @@
 // routes/reminders.js
 import express from "express";
-import { pool } from "../db.js";
+import pool from "../db.js";
 
 const router = express.Router();
 const GRACE1_MIN = Number(process.env.NUDGE_GRACE_MIN || 15);   // after start

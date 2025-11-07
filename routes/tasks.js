@@ -1,5 +1,5 @@
 import express from "express";
-import { pool } from "../db.js";
+import pool from "../db.js";
 import path from "path";
 import fs from "fs";
 import { saveDataUrlToFile } from "../app.js";

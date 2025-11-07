@@ -1,6 +1,6 @@
 // routes/purchasing-flow.js
 import express from "express";
-import { pool } from "../db.js";         // adjust import to your project
+import pool from "../db.js";         // adjust import to your project
 import { requireRoleApi } from "./auth.js"; // same pattern as requireRolePage
 const router = express.Router();
 
