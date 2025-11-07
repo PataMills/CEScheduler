@@ -1,6 +1,6 @@
 // /pages/quoteAck.js
 import express from "express";
-import { pool } from "../db.js";
+import pool from "../db.js";
 import { createAndSendDepositInvoice } from '../services/qbo.js';   // adjust path if needed
 
 

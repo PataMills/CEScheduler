@@ -76,6 +76,15 @@ import tasksSearchRoutes from "./routes/tasksSearch.js";
 import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "./slack.js";
 import autoTasksRouter from "./routes/autoTasks.js";
 import teamTaskApi from "./routes/teamTaskApi.js";
+import { query } from "./db.js";
+app.get("/api/health/db", async (req, res) => {
+  try {
+    const r = await query("SELECT 1 as ok");
+    res.json({ ok: r.rows[0].ok === 1 });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // --- init app FIRST ---
 const app = express();
