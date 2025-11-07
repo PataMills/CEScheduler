@@ -30,7 +30,12 @@ router.post("/api/po/submit", allow, async (req, res) => {
 
     // Optional: queue reminder ~14 days pre-install
     if (bid.promised_date) {
-      const needed = new Date(bid.promised_date.valueOf() - 14 * 24 * 60 * 60 * 1000);
+      const promised = new Date(bid.promised_date);
+      const promisedMs = promised.getTime();
+      if (!Number.isFinite(promisedMs)) {
+        throw new Error("invalid_promised_date");
+      }
+      const needed = new Date(promisedMs - 14 * 24 * 60 * 60 * 1000);
       await client.query(
         `INSERT INTO public.purchase_queue (job_id, item_name, spec, needed_by, vendor, status, org_id)
          VALUES ($1, $2, $3, $4, $5, 'pending', NULL)`,

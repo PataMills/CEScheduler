@@ -140,6 +140,28 @@ export default function registerSalesReview(app){
     }).join('');
   }
 
+  function normalizeColumnsDetails(data){
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === 'object' && !Array.isArray(data) && !data._error) {
+      return Object.keys(data).map(function(key){
+        var row = data[key] || {};
+        var units = Number(row.units ?? row.unit_count ?? 0) || 0;
+        return {
+          column_id: Number(key),
+          column_label: row.column_label || row.label || row.room || ('Card ' + key),
+          room: row.room || null,
+          unit_type: row.unit_type || null,
+          color: row.color || null,
+          units: units,
+          meta: row.meta,
+          hardware: row.hardware,
+          notes: row.notes
+        };
+      });
+    }
+    return [];
+  }
+
   function renderMoney(totals){
     var box = $('summary'); if(!box) return;
     if(!totals){
@@ -241,50 +263,39 @@ export default function registerSalesReview(app){
   function renderSpecs(details, colsDetails, model){
     var box = $('specs'); if(!box) return;
 
-    var parts = [];
-    
-    // Check if we have column data
-    if (!colsDetails || typeof colsDetails !== 'object') {
-      parts.push('<div class="muted">No specifications available.</div>');
-      box.innerHTML = parts.join('');
+    var rows = normalizeColumnsDetails(colsDetails);
+    if (!rows.length) {
+      box.innerHTML = '<div class="muted">No card specifications found.</div>';
       return;
     }
 
-    // Get columns array from model
-    var columns = (model && Array.isArray(model.columns)) ? model.columns : [];
-    
-    // Iterate through each column (card) and display its specs
-    var cardCount = 0;
-    for (var key in colsDetails) {
-      if (key === 'hardware') continue; // Skip aggregated hardware key
-      
-      var col = colsDetails[key];
-      if (!col || !col.meta) continue;
-      
-      var meta = col.meta;
-      var columnLabel = '';
-      var units = 0;
-      
-      // Find matching column info from model
-      for (var i = 0; i < columns.length; i++) {
-        if (String(columns[i].column_id) === String(key)) {
-          columnLabel = columns[i].column_label || '';
-          units = columns[i].units || 0;
-          break;
-        }
+    var modelColumns = (model && Array.isArray(model.columns)) ? model.columns : [];
+    var columnInfoById = new Map();
+    for (var i = 0; i < modelColumns.length; i++) {
+      var mc = modelColumns[i];
+      var key = String(mc.column_id ?? mc.id ?? mc.columnId ?? mc.columnID ?? i);
+      columnInfoById.set(key, mc);
+    }
+
+    var parts = [];
+    rows.forEach(function(row, index){
+      var cidRaw = row.column_id ?? row.id ?? row.columnId ?? row.columnID ?? index;
+      var cid = Number(cidRaw);
+      var meta = (row.meta && typeof row.meta === 'object') ? row.meta : {};
+      var hardware = Array.isArray(row.hardware) ? row.hardware : [];
+      var notes = row.notes || '';
+
+      var info = columnInfoById.get(String(cidRaw)) || row || {};
+      var columnLabel = info.column_label || info.label || info.room || ('Card ' + (Number.isFinite(cid) ? cid : index + 1));
+      var units = Number(info.units ?? row.units ?? 0) || 0;
+
+      parts.push('<div style="margin-top:', (index > 0 ? '20px' : '0'), ';padding:12px;border:1px solid #2a2f3f;border-radius:8px;background:#0f1419">');
+      parts.push('<h4 style="margin:0 0 10px 0;color:#66d9ef">', esc(columnLabel));
+      if (units > 0) {
+        parts.push(' <span style="color:#9aa3b2;font-weight:normal">(', units, ' units)</span>');
       }
-      
-      cardCount++;
-      
-      // Card header
-      parts.push('<div style="margin-top:', (cardCount > 1 ? '20px' : '0'), ';padding:12px;border:1px solid #2a2f3f;border-radius:8px;background:#0f1419">');
-      parts.push('<h4 style="margin:0 0 10px 0;color:#66d9ef">', esc(columnLabel || 'Card ' + key));
-      if (units > 0) parts.push(' <span style="color:#9aa3b2;font-weight:normal">(', units, ' units)</span>');
       parts.push('</h4>');
-      
-      // Specs table
-      parts.push('<table class="kv" style="width:100%">');
-      
+
       var specRows = [
         ['Box', meta.box_construction || meta.box || ''],
         ['Material', meta.material || meta.door_material || meta.species || ''],
@@ -293,22 +304,21 @@ export default function registerSalesReview(app){
         ['Edge', meta.edge_profile || meta.edge || ''],
         ['Manufacturer', meta.manufacturer || '']
       ];
-      
+
+      parts.push('<table class="kv" style="width:100%">');
       for (var j = 0; j < specRows.length; j++) {
-        var row = specRows[j];
-        if (row[1]) { // Only show if value exists
-          parts.push('<tr><td style="color:#9aa3b2">', esc(row[0]), '</td><td>', esc(row[1]), '</td></tr>');
+        var rowSpec = specRows[j];
+        if (rowSpec[1]) {
+          parts.push('<tr><td style="color:#9aa3b2">', esc(rowSpec[0]), '</td><td>', esc(rowSpec[1]), '</td></tr>');
         }
       }
-      
       parts.push('</table>');
-      
-      // Hardware for this card
-      if (Array.isArray(col.hardware) && col.hardware.length > 0) {
+
+      if (hardware.length) {
         parts.push('<h5 style="margin:12px 0 6px 0">Hardware</h5>');
         parts.push('<table class="list" style="width:100%"><tbody>');
-        for (var h = 0; h < col.hardware.length; h++) {
-          var hw = col.hardware[h];
+        for (var h = 0; h < hardware.length; h++) {
+          var hw = hardware[h];
           var kind = String(hw.kind || hw.type || '').toUpperCase();
           var label = [hw.brand, hw.model, hw.finish].filter(Boolean).join(' ');
           var qty = hw.qty != null ? hw.qty : (hw.quantity != null ? hw.quantity : (hw.unit_count != null ? hw.unit_count : ''));
@@ -316,34 +326,32 @@ export default function registerSalesReview(app){
         }
         parts.push('</tbody></table>');
       }
-      
-      // Notes for this card
-      if (col.notes) {
+
+      if (notes) {
         parts.push('<div style="margin-top:8px;padding:8px;background:#1a1f2e;border-radius:4px;font-size:13px;color:#c9d1d9">');
-        parts.push('<strong>Notes:</strong> ', esc(col.notes));
+        parts.push('<strong>Notes:</strong> ', esc(notes));
         parts.push('</div>');
       }
-      
+
       parts.push('</div>');
-    }
-    
-    if (cardCount === 0) {
-      parts.push('<div class="muted">No card specifications found.</div>');
-    }
+    });
 
     box.innerHTML = parts.join('');
   }
 
-  function renderSnapshot(model, details, files){
-    var cards = Number((model && model.cards_count) || (details && details.projectSnapshot && details.projectSnapshot.cards) || 0);
-    var units = Number((model && model.units_count) || (details && details.projectSnapshot && details.projectSnapshot.units) || 0);
-    var docsN = 0;
-    if(Array.isArray(files)) docsN = files.length;
-    else if(details && details.projectSnapshot && details.projectSnapshot.docs != null) docsN = Number(details.projectSnapshot.docs);
+  function renderSnapshot(model, details, files, colsDetails){
+    var columns = normalizeColumnsDetails(colsDetails);
+    var cards = columns.length || Number((model && model.cards_count) || (details && details.projectSnapshot && details.projectSnapshot.cards) || 0);
+    var unitsFromColumns = columns.reduce(function(sum, col){ return sum + Number(col.units || 0); }, 0);
+    var units = unitsFromColumns || Number((model && model.units_count) || (details && details.projectSnapshot && details.projectSnapshot.units) || 0);
+    var docsN = Array.isArray(files) ? files.length : (details && details.projectSnapshot && details.projectSnapshot.docs != null ? Number(details.projectSnapshot.docs) : 0);
 
-    var elC = $('summary_badgeCards'); if(elC) elC.textContent = cards + ' Cards';
-    var elU = $('summary_badgeUnits'); if(elU) elU.textContent = units + ' Units';
-    var elD = $('summary_badgeDocs');  if(elD) elD.textContent = docsN + ' Docs';
+    var elC = $('summary_badgeCards');
+    if(elC) elC.textContent = cards + (cards === 1 ? ' Card' : ' Cards');
+    var elU = $('summary_badgeUnits');
+    if(elU) elU.textContent = units + (units === 1 ? ' Unit' : ' Units');
+    var elD = $('summary_badgeDocs');
+    if(elD) elD.textContent = docsN + (docsN === 1 ? ' Doc' : ' Docs');
   }
 
   // ---- main load ----
@@ -365,6 +373,7 @@ export default function registerSalesReview(app){
     var customerInfo = results[4];
     var model = results[5];
     var colsDetails = results[6];
+  var colsArray = normalizeColumnsDetails(colsDetails && !colsDetails._error ? colsDetails : null);
 
     var files = await fetchSoft('/api/files?bid=' + bid);
     if (files && files._error) {
@@ -381,7 +390,7 @@ export default function registerSalesReview(app){
     if (docList && docList._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
     if (customerInfo && customerInfo._error) $('custjob').innerHTML = '<div class="muted">Customer info unavailable.</div>';
     if (model && model._error) $('specs').innerHTML = '<div class="muted">Specs unavailable.</div>';
-    if (colsDetails && colsDetails._error) $('specs').innerHTML = '<div class="muted">Specs unavailable.</div>';
+  if (colsDetails && colsDetails._error) $('specs').innerHTML = '<div class="muted">Specs unavailable.</div>';
 
     renderHeader(me,
       details && !details._error ? details : null,
@@ -397,11 +406,12 @@ export default function registerSalesReview(app){
     renderDocs(docsSafe, details);
     renderMoney(totals && !totals._error ? totals : null);
     renderCustomerJob(customerInfo && !customerInfo._error ? customerInfo : null, details && !details._error ? details : null, intake && !intake._error ? intake : null);
-    renderSpecs(details && !details._error ? details : null, colsDetails && !colsDetails._error ? colsDetails : null, model && !model._error ? model : null);
+    renderSpecs(details && !details._error ? details : null, colsArray, model && !model._error ? model : null);
     renderSnapshot(
       model && !model._error ? model : null,
       details && !details._error ? details : null,
-      Array.isArray(docsSafe) ? docsSafe : []
+      Array.isArray(docsSafe) ? docsSafe : [],
+      colsArray
     );
 
     // Wire buttons with file validation

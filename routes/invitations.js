@@ -110,8 +110,8 @@ async function ensureSchema() {
   }
 }
 
-// Run schema setup immediately (skip during test)
-if (process.env.NODE_ENV !== 'test') {
+// Run schema setup immediately (skip during test/bootstraps)
+if (process.env.NODE_ENV !== 'test' && process.env.SKIP_DB_BOOTSTRAP !== '1') {
   await ensureSchema();
 }
 

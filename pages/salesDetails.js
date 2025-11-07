@@ -179,6 +179,14 @@ export default function registerSalesDetails(app){
   function q(name){ return new URLSearchParams(location.search).get(name); }
   function money(n){ var v=Number(n||0); return v.toLocaleString('en-US',{style:'currency',currency:'USD'}); }
 
+  let cachedDocs = [];
+  function setBadgeText(id, count, singular, plural) {
+    const el = document.getElementById(id);
+    if (!el || count == null) return;
+    const value = Number(count) || 0;
+    el.textContent = value + ' ' + (value === 1 ? singular : plural);
+  }
+
   // ---------- client-side image compression ----------
   function compressImage(file, maxWidth = 1920, quality = 0.85) {
     return new Promise((resolve, reject) => {
@@ -263,10 +271,19 @@ function addDocChip(host, d, bidId){
 async function loadBidDetails(){
   if(!bid) return;
 
-  // Pull bid details
-  const d = await fetchSoft('/api/bids/'+bid+'/details');
-  const ob = (d && d.onboarding) ? d.onboarding : {};
-  const docs = (d && Array.isArray(d.doc_links)) ? d.doc_links : [];
+  // Pull bid details (legacy) and documents via new API
+  const [legacyDetails, docsResp] = await Promise.all([
+    fetchSoft('/api/bids/'+bid+'/details'),
+    fetchSoft('/api/bids/'+bid+'/documents')
+  ]);
+
+  const ob = (legacyDetails && legacyDetails.onboarding) ? legacyDetails.onboarding : {};
+  const docs = (Array.isArray(docsResp) && docsResp.length)
+    ? docsResp
+    : (legacyDetails && Array.isArray(legacyDetails.doc_links) ? legacyDetails.doc_links : []);
+
+  cachedDocs = Array.isArray(docs) ? docs : [];
+  setBadgeText('badgeDocs', cachedDocs.length, 'Doc', 'Docs');
 
   // Set only bid-level fields we keep
   function set(id,val){ const e=document.querySelector(id); if(e) e.value = (val==null?'':String(val)); }
@@ -278,23 +295,12 @@ async function loadBidDetails(){
   const host = document.getElementById('bidDocsList');
   if (host) {
     host.innerHTML = '';
-    (docs.filter(x => !x.column_id)).forEach(d => {
+    cachedDocs.filter(x => !x.column_id).forEach(d => {
       addDocChip(host, d, bid);
     });
   }
 
-  // Snapshot badges (cards/units/docs)
-  try {
-    const model = await fetchSoft('/api/bids/'+bid+'/model'); // { columns }
-    const cols = (model && Array.isArray(model.columns)) ? model.columns : [];
-    const totalUnits = cols.reduce((s,c)=> s + Number(c.units||0), 0);
-    const badgeCards = document.getElementById('badgeCards');
-    const badgeUnits = document.getElementById('badgeUnits');
-    const badgeDocs  = document.getElementById('badgeDocs');
-    if (badgeCards) badgeCards.textContent = cols.length + ' ' + (cols.length === 1 ? 'Card' : 'Cards');
-    if (badgeUnits) badgeUnits.textContent = totalUnits + ' ' + (totalUnits === 1 ? 'Unit' : 'Units');
-    if (badgeDocs)  badgeDocs.textContent  = docs.length + ' ' + (docs.length === 1 ? 'Doc' : 'Docs');
-  } catch (_) {}
+  return { legacyDetails, docs: cachedDocs };
 }
 
 function parseMetaString(s){
@@ -556,54 +562,28 @@ function parseMetaString(s){
 
 
   // ---------- load cards ----------
-  async function loadCards(){
+  async function loadCards(ctx){
     if (!bid) return;
 
-    const [columnsResp, detailsResp, documentsResp, modelResp, legacyDetails] = await Promise.all([
-      fetchSoft('/api/bids/'+bid+'/columns'),
-      fetchSoft('/api/bids/'+bid+'/columns-details'),
-      fetchSoft('/api/bids/'+bid+'/documents'),
-      fetchSoft('/api/bids/'+bid+'/model'),
-      fetchSoft('/api/bids/'+bid+'/details')
-    ]);
-
-    const model = modelResp && !modelResp._error ? modelResp : {};
-    const modelColumns = Array.isArray(model.columns) ? model.columns : [];
-    const modelLines = Array.isArray(model.lines) ? model.lines : [];
-
-    const columnsSafe = Array.isArray(columnsResp) ? columnsResp : [];
-    const columns = columnsSafe.length
-      ? columnsSafe.map((col) => ({
-          column_id: Number(col.id ?? col.column_id ?? col.columnId ?? col.columnID),
-          column_label: col.label || col.room || ('Card ' + (col.id ?? col.column_id ?? '')),
-          units: Number(col.units ?? 0) || 0,
-          room: col.room || null,
-          unit_type: col.unit_type || null,
-          color: col.color || null
-        }))
-      : modelColumns;
-
-    const detailsArray = Array.isArray(detailsResp) ? detailsResp : [];
-    let detailsMap = {};
-    if (detailsArray.length) {
-      detailsMap = detailsArray.reduce((acc, row) => {
-        const cid = Number(row.column_id);
-        if (!Number.isFinite(cid)) return acc;
-        acc[cid] = {
-          meta: row.meta && typeof row.meta === 'object' ? row.meta : {},
-          hardware: Array.isArray(row.hardware) ? row.hardware : [],
-          notes: row.notes ?? null
-        };
-        return acc;
-      }, {});
-    } else if (detailsResp && typeof detailsResp === 'object' && !Array.isArray(detailsResp)) {
-      detailsMap = detailsResp;
+    let legacyDetails = ctx?.legacyDetails;
+    if (!legacyDetails) {
+      legacyDetails = await fetchSoft('/api/bids/'+bid+'/details');
     }
 
-    const documentList = Array.isArray(documentsResp) ? documentsResp : [];
-    const legacyDocLinks = (legacyDetails && Array.isArray(legacyDetails.doc_links)) ? legacyDetails.doc_links : [];
-    const docsCombined = documentList.length ? documentList : legacyDocLinks;
+    const [columnsResp, modelResp] = await Promise.all([
+      fetchSoft('/api/bids/'+bid+'/columns-details'),
+      fetchSoft('/api/bids/'+bid+'/model')
+    ]);
 
+    const columnsArray = Array.isArray(columnsResp) ? columnsResp : [];
+    const docsFromCtx = Array.isArray(ctx?.docs) ? ctx.docs : [];
+    const docsList = cachedDocs.length ? cachedDocs : docsFromCtx;
+
+    const legacyDocLinks = Array.isArray(legacyDetails?.doc_links) ? legacyDetails.doc_links : [];
+    const docsCombined = docsList.length ? docsList : legacyDocLinks;
+
+    const modelColumns = Array.isArray(modelResp?.columns) ? modelResp.columns : [];
+    const modelLines = Array.isArray(modelResp?.lines) ? modelResp.lines : [];
     const noteLines = modelLines
       .filter(l => String(l.category||'').toLowerCase() === 'notes' && /^mfg:/i.test(String(l.description||'')))
       .map(l => parseMetaString(l.description));
@@ -611,20 +591,46 @@ function parseMetaString(s){
     const host = document.getElementById('cardsHost');
     if (host) host.innerHTML = '';
 
-    (columns || []).forEach((c, idx) => {
-      const columnId = Number(c.column_id ?? c.id ?? c.columnId ?? c.columnID);
+    const sourceColumns = columnsArray.length ? columnsArray : modelColumns.map((col) => ({
+      column_id: Number(col.id ?? col.column_id ?? col.columnId ?? col.columnID),
+      column_label: col.label || col.room || ('Card ' + (col.id ?? col.column_id ?? '')),
+      units: Number(col.units ?? 0) || 0,
+      room: col.room || null,
+      unit_type: col.unit_type || null,
+      color: col.color || null
+    }));
+
+    const detailsMap = columnsArray.reduce((acc, row) => {
+      const cid = Number(row.column_id);
+      if (!Number.isFinite(cid)) return acc;
+      acc[cid] = {
+        meta: row.meta && typeof row.meta === 'object' ? row.meta : {},
+        hardware: Array.isArray(row.hardware) ? row.hardware : [],
+        notes: row.notes ?? null
+      };
+      return acc;
+    }, {});
+
+    sourceColumns.forEach((col, idx) => {
+      const columnId = Number(col?.column_id ?? col?.id ?? col?.columnId ?? col?.columnID);
       const saved = Number.isFinite(columnId) ? detailsMap[columnId] || {} : {};
       const hasSavedMeta = saved.meta && (saved.meta.manufacturer || saved.meta.species || saved.meta.style || saved.meta.finish_color);
       const fallbackMeta = (!hasSavedMeta && noteLines[idx]) ? { meta: noteLines[idx], hardware: [], notes: '' } : {};
-      const det = hasSavedMeta ? saved : fallbackMeta;
+      const det = columnsArray.length ? saved : (hasSavedMeta ? saved : fallbackMeta);
 
       const docsForCol = docsCombined.filter((doc) => {
         const docCol = Number(doc?.column_id ?? doc?.columnId);
         return Number.isFinite(columnId) && Number.isFinite(docCol) && docCol === columnId;
       });
 
-      if (host) host.appendChild(buildCard(c, det, docsForCol));
+      if (host) host.appendChild(buildCard(col, det, docsForCol));
     });
+
+    setBadgeText('badgeCards', sourceColumns.length, 'Card', 'Cards');
+    const totalUnits = sourceColumns.reduce((sum, c) => sum + Number(c.units ?? c.unit_count ?? 0), 0);
+    setBadgeText('badgeUnits', totalUnits, 'Unit', 'Units');
+    const docCount = (cachedDocs.length ? cachedDocs : docsCombined).length;
+    setBadgeText('badgeDocs', docCount, 'Doc', 'Docs');
   }
 
 

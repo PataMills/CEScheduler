@@ -80,10 +80,20 @@ import teamTaskApi from "./routes/teamTaskApi.js";
 // --- init app FIRST ---
 const app = express();
 
-pool
-  .query("select 1")
-  .then(() => console.log("DB connection OK"))
-  .catch((err) => console.error("DB connection failed:", err.message));
+const skipDbBootstrap = process.env.SKIP_DB_BOOTSTRAP === "1";
+
+if (!skipDbBootstrap) {
+  pool
+    .query("select 1")
+    .then(() => {
+      if (process.env.NODE_ENV !== "test") {
+        console.log("DB connection OK");
+      }
+    })
+    .catch((err) => {
+      console.error("DB connection failed:", err.message);
+    });
+}
 
 registerBids(app);
 registerPurchasing(app);
