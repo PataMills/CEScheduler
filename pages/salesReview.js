@@ -348,25 +348,37 @@ export default function registerSalesReview(app){
 
   // ---- main load ----
   async function load(){
-    var [ intake, details, totals, me, customerInfo, model, colsDetails, files, docList ] = await Promise.all([
+    var results = await Promise.all([
       fetchSoft('/api/bids/' + bid + '/intake'),
       fetchSoft('/api/bids/' + bid + '/details'),
       fetchSoft('/api/bids/' + bid + '/totals'),
       fetchSoft('/api/me'),
       fetchSoft('/api/bids/' + bid + '/customer-info'),
       fetchSoft('/api/bids/' + bid + '/model'),
-      fetchSoft('/api/bids/' + bid + '/columns-details'),
-      // Try both file endpoints, fallback to empty array if both fail
-      (await fetchSoft('/api/files?bid=' + bid))._error ? (await fetchSoft('/api/bids/' + bid + '/files')) : (await fetchSoft('/api/files?bid=' + bid)),
-      fetchSoft('/api/bids/' + bid + '/documents')
+      fetchSoft('/api/bids/' + bid + '/columns-details')
     ]);
 
+    var intake = results[0];
+    var details = results[1];
+    var totals = results[2];
+    var me = results[3];
+    var customerInfo = results[4];
+    var model = results[5];
+    var colsDetails = results[6];
+
+    var files = await fetchSoft('/api/files?bid=' + bid);
+    if (files && files._error) {
+      files = await fetchSoft('/api/bids/' + bid + '/files');
+    }
+
+    var docList = await fetchSoft('/api/bids/' + bid + '/documents');
+
     // Defensive: if any required data is missing, show error messages
-  if (intake && intake._error) $('custjob').innerHTML = '<div class="muted">Customer/job info unavailable.</div>';
-  if (details && details._error) $('summary').innerHTML = '<div class="muted">Summary unavailable.</div>';
-  if (totals && totals._error) $('summary').innerHTML = '<div class="muted">Totals unavailable.</div>';
-  if (files && files._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
-  if (docList && docList._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
+    if (intake && intake._error) $('custjob').innerHTML = '<div class="muted">Customer/job info unavailable.</div>';
+    if (details && details._error) $('summary').innerHTML = '<div class="muted">Summary unavailable.</div>';
+    if (totals && totals._error) $('summary').innerHTML = '<div class="muted">Totals unavailable.</div>';
+    if (files && files._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
+    if (docList && docList._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
     if (customerInfo && customerInfo._error) $('custjob').innerHTML = '<div class="muted">Customer info unavailable.</div>';
     if (model && model._error) $('specs').innerHTML = '<div class="muted">Specs unavailable.</div>';
     if (colsDetails && colsDetails._error) $('specs').innerHTML = '<div class="muted">Specs unavailable.</div>';
@@ -376,8 +388,13 @@ export default function registerSalesReview(app){
       intake && !intake._error ? intake : null,
       customerInfo && !customerInfo._error ? customerInfo : null
     );
-  var docsSafe = Array.isArray(docList) ? docList : (Array.isArray(files) ? files : []);
-  renderDocs(docsSafe, details);
+
+    var docsSafe = Array.isArray(docList) && !docList._error ? docList : [];
+    if (!docsSafe.length && Array.isArray(files) && !files._error) {
+      docsSafe = files;
+    }
+
+    renderDocs(docsSafe, details);
     renderMoney(totals && !totals._error ? totals : null);
     renderCustomerJob(customerInfo && !customerInfo._error ? customerInfo : null, details && !details._error ? details : null, intake && !intake._error ? intake : null);
     renderSpecs(details && !details._error ? details : null, colsDetails && !colsDetails._error ? colsDetails : null, model && !model._error ? model : null);

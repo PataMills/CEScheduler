@@ -47,7 +47,7 @@ import registerSalesDetails from "./pages/salesDetails.js";
 import registerAdminLeadTimes from "./pages/adminLeadTimes.js";
 import registerPurchasingPage from "./pages/purchasing.js";
 import registerAdminHub from "./pages/adminHub.js";
-import { pool } from "./db.js";
+import pool from "./db.js";
 import registerSchedulePage from "./pages/schedule.js";
 import jobsRouter from "./routes/jobs.js";
 import registerGanttPage from "./pages/gantt.js";
@@ -79,6 +79,11 @@ import teamTaskApi from "./routes/teamTaskApi.js";
 
 // --- init app FIRST ---
 const app = express();
+
+pool
+  .query("select 1")
+  .then(() => console.log("DB connection OK"))
+  .catch((err) => console.error("DB connection failed:", err.message));
 
 app.get('/qbo/check', async (_req, res) => {
   try {
