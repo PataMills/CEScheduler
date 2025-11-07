@@ -9,10 +9,10 @@ import scheduleRouter from "./routes/schedule.js";
 import resourcesRouter from "./routes/resources.js";
 import mydayRouter from "./routes/myday.js";
 import tasksRouter from "./routes/tasks.js";
-import bidsRouter from "./routes/bids.js";
+import registerBids from "./routes/bids.js";
 // optionsRouter removed
 import 'dotenv/config';
-import purchasingRouter from "./routes/purchasing.js";
+import registerPurchasing from "./routes/purchasing.js";
 import registerPurchasingWorklist from "./pages/purchasingWorklist.js";
 import registerBidsInline from "./pages/bidsInline.js";
 import registerBidsCards from "./pages/bidsCards.js";
@@ -85,6 +85,9 @@ pool
   .then(() => console.log("DB connection OK"))
   .catch((err) => console.error("DB connection failed:", err.message));
 
+registerBids(app);
+registerPurchasing(app);
+
 app.get('/qbo/check', async (_req, res) => {
   try {
     const id = await ensureDepositItemId();
@@ -132,9 +135,7 @@ app.use("/api/tasks", tasksRouter);
 app.use("/api/tasks", autoTasksRouter);
 app.use("/api/schedule", scheduleRouter);
 app.use("/api/resources", resourcesRouter);
-app.use("/api/bids", bidsRouter);
 app.use("/api/jobs", jobsRouter);
-app.use("/api/purchasing", purchasingRouter);
 app.use("/api/crews", crewsRouter);
 app.use("/api/availability", availabilityRouter);
 app.use(salesRouter);
