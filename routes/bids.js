@@ -51,6 +51,36 @@ function deepMerge(a = {}, b = {}) {
   return out;
 }
 
+function coerceNumber(value, fallback = null) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function isHttpUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(String(value));
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function normalizeDocUrl(rawUrl, baseOrigin = '') {
+  const value = String(rawUrl ?? '').trim();
+  if (!value) return null;
+  if (value.startsWith('/')) return value;
+  if (isHttpUrl(value)) return value;
+  if (baseOrigin) {
+    try {
+      return new URL(value, baseOrigin).toString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function isHttpUrl(value) {
   if (!value) return false;
   try {
@@ -806,40 +836,178 @@ router.post("/:id/docs/delete", async (req, res) => {
 });
 
 
-// GET /api/bids/:id/columns-details -> { [column_id]: { meta, hardware, notes }, hardware: [...] }
-router.get('/:id/columns-details', async (req, res) => {
+// --- Columns: list (basic cards) ---
+router.get('/:id/columns', requireRoleApi(['admin', 'sales']), async (req, res) => {
   const bidId = Number(req.params.id);
-  const { rows } = await pool.query(
-    `SELECT column_id, meta, hardware, notes
-       FROM public.bid_column_details
-      WHERE bid_id = $1`,
-    [bidId]
-  );
-  const out = {};
-  const allHardware = [];
-  
-  for (const r of rows) {
-    out[r.column_id] = {
-      meta: r.meta || {},
-      hardware: Array.isArray(r.hardware) ? r.hardware : [], // <- array guarantee
-      notes: r.notes ?? null
-    };
-    // Aggregate hardware from all columns
-    if (Array.isArray(r.hardware)) {
-      allHardware.push(...r.hardware);
-    }
+  if (!Number.isFinite(bidId) || bidId <= 0) {
+    return res.status(400).json({ error: 'bad_bid_id' });
   }
-  
-  // Add aggregated hardware at top level for easy access
-  out.hardware = allHardware;
-  
-  res.json(out);
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, label, room, unit_type, color, units, sort_order
+         FROM public.bid_columns
+        WHERE bid_id = $1
+        ORDER BY sort_order, id`,
+      [bidId]
+    );
+
+    const columns = rows.map((row) => ({
+      id: coerceNumber(row.id),
+      label: row.label || null,
+      room: row.room || null,
+      unit_type: row.unit_type || null,
+      color: row.color || null,
+      units: coerceNumber(row.units, 0),
+      sort_order: coerceNumber(row.sort_order, 0)
+    }));
+
+    res.json(columns);
+  } catch (e) {
+    console.error('columns fetch error', e);
+    res.status(500).json({ error: 'columns_fetch_failed' });
+  }
+});
+
+// --- Columns + Details (joined) ---
+router.get('/:id/columns-details', requireRoleApi(['admin', 'sales']), async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId) || bidId <= 0) {
+    return res.status(400).json({ error: 'bad_bid_id' });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT bc.id AS column_id,
+              bc.label,
+              bc.room,
+              bc.unit_type,
+              bc.color,
+              bc.units,
+              bc.sort_order,
+              bcd.meta,
+              bcd.hardware,
+              bcd.notes,
+              bcd.updated_at
+         FROM public.bid_columns bc
+         LEFT JOIN public.bid_column_details bcd
+           ON bcd.bid_id = bc.bid_id
+          AND bcd.column_id = bc.id
+        WHERE bc.bid_id = $1
+        ORDER BY bc.sort_order, bc.id`,
+      [bidId]
+    );
+
+    const details = rows.map((row) => ({
+      column_id: coerceNumber(row.column_id),
+      label: row.label || null,
+      room: row.room || null,
+      unit_type: row.unit_type || null,
+      color: row.color || null,
+      units: coerceNumber(row.units, 0),
+      sort_order: coerceNumber(row.sort_order, 0),
+      meta: row.meta && typeof row.meta === 'object' ? row.meta : {},
+      hardware: Array.isArray(row.hardware) ? row.hardware : [],
+      notes: row.notes ?? null,
+      updated_at: row.updated_at || null
+    }));
+
+    res.json(details);
+  } catch (e) {
+    console.error('columns-details fetch error', e);
+    res.status(500).json({ error: 'columns_details_fetch_failed' });
+  }
+});
+
+// --- Documents listing ---
+router.get('/:id/documents', requireRoleApi(['admin', 'sales']), async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId) || bidId <= 0) {
+    return res.status(400).json({ error: 'bad_bid_id' });
+  }
+
+  const baseOrigin = process.env.PUBLIC_ORIGIN || '';
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, kind, name, url, uploaded_at, column_id
+         FROM public.bid_documents
+        WHERE bid_id = $1
+        ORDER BY uploaded_at DESC NULLS LAST, id DESC`,
+      [bidId]
+    );
+
+    if (rows.length) {
+      const docs = rows
+        .map((row) => {
+          const url = normalizeDocUrl(row.url, baseOrigin);
+          if (!url) return null;
+          return {
+            id: coerceNumber(row.id),
+            kind: row.kind || null,
+            name: row.name || null,
+            url,
+            column_id: coerceNumber(row.column_id),
+            uploaded_at: row.uploaded_at || null
+          };
+        })
+        .filter(Boolean);
+
+      return res.json(docs);
+    }
+  } catch (err) {
+    const code = err?.code;
+    const message = String(err?.message || '').toLowerCase();
+    if (!(code === '42P01' || message.includes('does not exist'))) {
+      console.error('documents fetch error', err);
+      return res.status(500).json({ error: 'documents_fetch_failed' });
+    }
+    // Table missing, fall through to legacy doc_links
+  }
+
+  try {
+    const legacy = await pool.query(
+      `SELECT doc_links FROM public.bids WHERE id = $1`,
+      [bidId]
+    );
+    if (!legacy.rowCount) {
+      return res.status(404).json({ error: 'bid_not_found' });
+    }
+
+    const docLinks = Array.isArray(legacy.rows[0].doc_links) ? legacy.rows[0].doc_links : [];
+    const docs = docLinks
+      .map((entry, idx) => {
+        const normalized =
+          typeof entry === 'string'
+            ? { url: entry }
+            : entry && typeof entry === 'object'
+            ? entry
+            : null;
+        if (!normalized) return null;
+        const url = normalizeDocUrl(normalized.url, baseOrigin);
+        if (!url) return null;
+        return {
+          id: normalized.id != null ? normalized.id : idx,
+          kind: normalized.kind || null,
+          name: normalized.name || null,
+          url,
+          column_id: normalized.column_id != null ? Number(normalized.column_id) : null,
+          uploaded_at: normalized.uploaded_at || null
+        };
+      })
+      .filter(Boolean);
+
+    res.json(docs);
+  } catch (fallbackErr) {
+    console.error('documents fallback error', fallbackErr);
+    res.status(500).json({ error: 'documents_fetch_failed' });
+  }
 });
 
 
 
 // PATCH /api/bids/:id/columns-details/:columnId
-router.patch('/:id/columns-details/:columnId', async (req, res) => {
+router.patch('/:id/columns-details/:columnId', requireRoleApi(['admin', 'sales']), async (req, res) => {
   const bidId = Number(req.params.id);
   const colId = Number(req.params.columnId);
 

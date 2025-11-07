@@ -384,10 +384,16 @@ function parseMetaString(s){
 
   // ---------- build one per-column card ----------
   function buildCard(col, details, docsForCol){
+    var columnId = Number(col?.column_id ?? col?.id ?? col?.columnId ?? col?.columnID);
+    if (!Number.isFinite(columnId)) columnId = null;
+    var cardLabel = col.column_label || col.label || 'Unit';
+    var unitsVal = Number(col.units ?? col.unit_count ?? 0) || 0;
+
     var card = el('div',{class:'cardx'});
     var title = el('div',{class:'rowx'});
-    title.appendChild(el('div',{class:'badge', text:(col.column_label||'Unit')}));
-    var metaLine = el('div',{class:'mutedx', text:('ID '+col.column_id+' • Units: '+(col.units||0))});
+    title.appendChild(el('div',{class:'badge', text: cardLabel}));
+    var idLabel = columnId != null ? ('ID '+columnId) : 'ID —';
+    var metaLine = el('div',{class:'mutedx', text:(idLabel+' • Units: '+unitsVal)});
     title.appendChild(metaLine);
     card.appendChild(title);
 
@@ -478,7 +484,12 @@ function parseMetaString(s){
         hardware: readHardwareRows(tbody),
         notes: card.querySelector('.m-notes').value.trim()
       };
-      fetchJSON('/api/bids/'+bid+'/columns-details/'+col.column_id, {
+      if (!Number.isFinite(columnId)) {
+        alert('Missing column id');
+        saveBtn.disabled=false; saveBtn.textContent='Save Card';
+        return;
+      }
+      fetchJSON('/api/bids/'+bid+'/columns-details/'+columnId, {
         method:'PATCH', headers:{'Content-Type':'application/json'},
         body: JSON.stringify(payload)
       }).then(function(){ alert('Saved ✓'); })
@@ -503,7 +514,8 @@ function parseMetaString(s){
           notes: card.querySelector('.m-notes').value.trim()
         };
         try {
-          await fetchJSON('/api/bids/'+bid+'/columns-details/'+col.column_id, {
+          if (!Number.isFinite(columnId)) return;
+          await fetchJSON('/api/bids/'+bid+'/columns-details/'+columnId, {
             method:'PATCH', headers:{'Content-Type':'application/json'},
             body: JSON.stringify(payload)
           });
@@ -526,7 +538,7 @@ function parseMetaString(s){
           const name = (nameInput.value || file.name || 'document').trim();
           const resp = await fetchJSON('/api/bids/'+bid+'/docs/upload-dataurl', {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ kind, name, dataUrl, column_id: col.column_id })
+            body: JSON.stringify({ kind, name, dataUrl, column_id: columnId })
           });
           if (resp?.file) addDocChip(docsList, resp.file, bid);
         }
@@ -547,33 +559,71 @@ function parseMetaString(s){
   async function loadCards(){
     if (!bid) return;
 
-    // 1) columns
-    const model = await fetchSoft('/api/bids/'+bid+'/model');   // { columns, lines }
-    const cols = (model && Array.isArray(model.columns)) ? model.columns : [];
+    const [columnsResp, detailsResp, documentsResp, modelResp, legacyDetails] = await Promise.all([
+      fetchSoft('/api/bids/'+bid+'/columns'),
+      fetchSoft('/api/bids/'+bid+'/columns-details'),
+      fetchSoft('/api/bids/'+bid+'/documents'),
+      fetchSoft('/api/bids/'+bid+'/model'),
+      fetchSoft('/api/bids/'+bid+'/details')
+    ]);
 
-    // 2) existing saved per-card details
-    const detailsMap = await fetchSoft('/api/bids/'+bid+'/columns-details') || {};
+    const model = modelResp && !modelResp._error ? modelResp : {};
+    const modelColumns = Array.isArray(model.columns) ? model.columns : [];
+    const modelLines = Array.isArray(model.lines) ? model.lines : [];
 
-    // 3) bid-level doc links (to show per card later)
-    const detailsResp = await fetchSoft('/api/bids/'+bid+'/details');
-    const docLinks = (detailsResp && Array.isArray(detailsResp.doc_links)) ? detailsResp.doc_links : [];
+    const columnsSafe = Array.isArray(columnsResp) ? columnsResp : [];
+    const columns = columnsSafe.length
+      ? columnsSafe.map((col) => ({
+          column_id: Number(col.id ?? col.column_id ?? col.columnId ?? col.columnID),
+          column_label: col.label || col.room || ('Card ' + (col.id ?? col.column_id ?? '')),
+          units: Number(col.units ?? 0) || 0,
+          room: col.room || null,
+          unit_type: col.unit_type || null,
+          color: col.color || null
+        }))
+      : modelColumns;
 
-    // 4) build a fallback meta list by parsing the "Mfg: ..." note lines in the same order cards were created
-    const noteLines = (model && Array.isArray(model.lines))
-      ? model.lines.filter(l => String(l.category||'').toLowerCase()==='notes' && /^mfg:/i.test(String(l.description||'')))
-                  .map(l => parseMetaString(l.description))
-      : [];
+    const detailsArray = Array.isArray(detailsResp) ? detailsResp : [];
+    let detailsMap = {};
+    if (detailsArray.length) {
+      detailsMap = detailsArray.reduce((acc, row) => {
+        const cid = Number(row.column_id);
+        if (!Number.isFinite(cid)) return acc;
+        acc[cid] = {
+          meta: row.meta && typeof row.meta === 'object' ? row.meta : {},
+          hardware: Array.isArray(row.hardware) ? row.hardware : [],
+          notes: row.notes ?? null
+        };
+        return acc;
+      }, {});
+    } else if (detailsResp && typeof detailsResp === 'object' && !Array.isArray(detailsResp)) {
+      detailsMap = detailsResp;
+    }
 
-    const host = document.getElementById('cardsHost'); if(host) host.innerHTML='';
-    cols.forEach((c, idx) => {
-      // if we have saved meta, use it; else fall back to the parsed line at same index
-      const saved = detailsMap[c.column_id] || {};
+    const documentList = Array.isArray(documentsResp) ? documentsResp : [];
+    const legacyDocLinks = (legacyDetails && Array.isArray(legacyDetails.doc_links)) ? legacyDetails.doc_links : [];
+    const docsCombined = documentList.length ? documentList : legacyDocLinks;
+
+    const noteLines = modelLines
+      .filter(l => String(l.category||'').toLowerCase() === 'notes' && /^mfg:/i.test(String(l.description||'')))
+      .map(l => parseMetaString(l.description));
+
+    const host = document.getElementById('cardsHost');
+    if (host) host.innerHTML = '';
+
+    (columns || []).forEach((c, idx) => {
+      const columnId = Number(c.column_id ?? c.id ?? c.columnId ?? c.columnID);
+      const saved = Number.isFinite(columnId) ? detailsMap[columnId] || {} : {};
       const hasSavedMeta = saved.meta && (saved.meta.manufacturer || saved.meta.species || saved.meta.style || saved.meta.finish_color);
       const fallbackMeta = (!hasSavedMeta && noteLines[idx]) ? { meta: noteLines[idx], hardware: [], notes: '' } : {};
       const det = hasSavedMeta ? saved : fallbackMeta;
 
-      const docsForCol = docLinks.filter(x => (x.column_id||null) === c.column_id);
-      host.appendChild(buildCard(c, det, docsForCol));
+      const docsForCol = docsCombined.filter((doc) => {
+        const docCol = Number(doc?.column_id ?? doc?.columnId);
+        return Number.isFinite(columnId) && Number.isFinite(docCol) && docCol === columnId;
+      });
+
+      if (host) host.appendChild(buildCard(c, det, docsForCol));
     });
   }
 
