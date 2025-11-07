@@ -81,32 +81,6 @@ function normalizeDocUrl(rawUrl, baseOrigin = '') {
   return null;
 }
 
-function isHttpUrl(value) {
-  if (!value) return false;
-  try {
-    const url = new URL(String(value));
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function normalizeDocUrl(rawUrl, baseOrigin = "") {
-  const value = String(rawUrl ?? "").trim();
-  if (!value) return null;
-  if (value.startsWith("/")) return value;
-  if (isHttpUrl(value)) return value;
-  if (baseOrigin) {
-    try {
-      return new URL(value, baseOrigin).toString();
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-
 async function seedPurchasingForJob(pool, jobId, installDateIso) {
   if (!jobId) return { seeded: 0, reason: "no_job" };
 

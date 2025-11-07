@@ -118,49 +118,26 @@ export default function registerSalesReview(app){
     meta.innerHTML = parts.join('');
   }
 
-  function renderDocs(files, details){
+  function renderDocs(documents, details){
     var box = $('docs'); if(!box) return;
-    var list = [];
 
-    if(Array.isArray(files) && files.length){
-      list = files.map(function(f){
-        var url = f.url || '#';
-        var name = f.name || f.filename || 'Document';
-        var mime = (f.mime || '').toLowerCase();
-        var isImage = mime.startsWith('image/');
-        
-        if (isImage) {
-          // Render image thumbnail with click-to-enlarge
-          return '<div style="display:inline-block;margin:8px;text-align:center">'
-            + '<a href="'+esc(url)+'" target="_blank" style="text-decoration:none">'
-            + '<img src="'+esc(url)+'" alt="'+esc(name)+'" style="width:100px;height:100px;object-fit:cover;border-radius:8px;border:1px solid #2a2f3f;display:block"/>'
-            + '<div style="margin-top:4px;font-size:11px;color:#9aa3b2;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(name)+'</div>'
-            + '</a></div>';
-        } else {
-          // Render document button
-          return '<div><a class="btn" target="_blank" href="'+esc(url)+'">'+esc(name)+'</a></div>';
-        }
-      });
-    } else if (details && Array.isArray(details.doc_links) && details.doc_links.length){
-      list = details.doc_links.map(function(d){
-        var url = d.url || d.link || '#';
-        var name = d.name || d.filename || 'Document';
-        var mime = (d.mime || '').toLowerCase();
-        var isImage = mime.startsWith('image/');
-        
-        if (isImage) {
-          return '<div style="display:inline-block;margin:8px;text-align:center">'
-            + '<a href="'+esc(url)+'" target="_blank" style="text-decoration:none">'
-            + '<img src="'+esc(url)+'" alt="'+esc(name)+'" style="width:100px;height:100px;object-fit:cover;border-radius:8px;border:1px solid #2a2f3f;display:block"/>'
-            + '<div style="margin-top:4px;font-size:11px;color:#9aa3b2;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(name)+'</div>'
-            + '</a></div>';
-        } else {
-          return '<div><a class="btn" target="_blank" href="'+esc(url)+'">'+esc(name)+'</a></div>';
-        }
-      });
+    var docs = Array.isArray(documents) ? documents : [];
+    if (!docs.length && details && Array.isArray(details.doc_links)) {
+      docs = details.doc_links;
     }
 
-    box.innerHTML = list.length ? list.join('') : '<div class="muted">No docs attached yet.</div>';
+    if (!docs.length) {
+      box.innerHTML = '<div class="muted">No documents attached.</div>';
+      return;
+    }
+
+    box.innerHTML = docs.map(function(doc){
+      var rawUrl = doc && (doc.url || doc.link);
+      var safeUrl = (rawUrl && /^https?:\/\//i.test(rawUrl)) ? rawUrl : '#';
+      var label = doc && (doc.name || doc.filename || doc.kind);
+      var text = label ? esc(label) : 'Document';
+      return '<div><a class="btn" target="_blank" rel="noopener" href="'+esc(safeUrl)+'">'+text+'</a></div>';
+    }).join('');
   }
 
   function renderMoney(totals){
@@ -371,7 +348,7 @@ export default function registerSalesReview(app){
 
   // ---- main load ----
   async function load(){
-    var [ intake, details, totals, me, customerInfo, model, colsDetails, files ] = await Promise.all([
+    var [ intake, details, totals, me, customerInfo, model, colsDetails, files, docList ] = await Promise.all([
       fetchSoft('/api/bids/' + bid + '/intake'),
       fetchSoft('/api/bids/' + bid + '/details'),
       fetchSoft('/api/bids/' + bid + '/totals'),
@@ -380,14 +357,16 @@ export default function registerSalesReview(app){
       fetchSoft('/api/bids/' + bid + '/model'),
       fetchSoft('/api/bids/' + bid + '/columns-details'),
       // Try both file endpoints, fallback to empty array if both fail
-      (await fetchSoft('/api/files?bid=' + bid))._error ? (await fetchSoft('/api/bids/' + bid + '/files')) : (await fetchSoft('/api/files?bid=' + bid))
+      (await fetchSoft('/api/files?bid=' + bid))._error ? (await fetchSoft('/api/bids/' + bid + '/files')) : (await fetchSoft('/api/files?bid=' + bid)),
+      fetchSoft('/api/bids/' + bid + '/documents')
     ]);
 
     // Defensive: if any required data is missing, show error messages
-    if (intake && intake._error) $('custjob').innerHTML = '<div class="muted">Customer/job info unavailable.</div>';
-    if (details && details._error) $('summary').innerHTML = '<div class="muted">Summary unavailable.</div>';
-    if (totals && totals._error) $('summary').innerHTML = '<div class="muted">Totals unavailable.</div>';
-    if (files && files._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
+  if (intake && intake._error) $('custjob').innerHTML = '<div class="muted">Customer/job info unavailable.</div>';
+  if (details && details._error) $('summary').innerHTML = '<div class="muted">Summary unavailable.</div>';
+  if (totals && totals._error) $('summary').innerHTML = '<div class="muted">Totals unavailable.</div>';
+  if (files && files._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
+  if (docList && docList._error) $('docs').innerHTML = '<div class="muted">Docs unavailable.</div>';
     if (customerInfo && customerInfo._error) $('custjob').innerHTML = '<div class="muted">Customer info unavailable.</div>';
     if (model && model._error) $('specs').innerHTML = '<div class="muted">Specs unavailable.</div>';
     if (colsDetails && colsDetails._error) $('specs').innerHTML = '<div class="muted">Specs unavailable.</div>';
@@ -397,14 +376,19 @@ export default function registerSalesReview(app){
       intake && !intake._error ? intake : null,
       customerInfo && !customerInfo._error ? customerInfo : null
     );
-    renderDocs(Array.isArray(files) ? files : [], details);
+  var docsSafe = Array.isArray(docList) ? docList : (Array.isArray(files) ? files : []);
+  renderDocs(docsSafe, details);
     renderMoney(totals && !totals._error ? totals : null);
     renderCustomerJob(customerInfo && !customerInfo._error ? customerInfo : null, details && !details._error ? details : null, intake && !intake._error ? intake : null);
     renderSpecs(details && !details._error ? details : null, colsDetails && !colsDetails._error ? colsDetails : null, model && !model._error ? model : null);
-    renderSnapshot(model && !model._error ? model : null, details && !details._error ? details : null, Array.isArray(files) ? files : []);
-    
+    renderSnapshot(
+      model && !model._error ? model : null,
+      details && !details._error ? details : null,
+      Array.isArray(docsSafe) ? docsSafe : []
+    );
+
     // Wire buttons with file validation
-    wireButtons(Array.isArray(files) ? files : []);
+    wireButtons(Array.isArray(docsSafe) ? docsSafe : []);
   }
 
   // ---- buttons ----
@@ -452,21 +436,22 @@ export default function registerSalesReview(app){
         
         // Check for each required document type
         for (var i = 0; i < requiredDocs.length; i++) {
-          var docType = requiredDocs[i].toLowerCase().replace(/\s+/g, '');
+          var docType = requiredDocs[i].toLowerCase().replace(/[\s_]+/g, '');
           var found = false;
           console.log('Checking required doc:', requiredDocs[i], 'as', docType);
           for (var j = 0; j < files.length; j++) {
-            var fileKind = (files[j].kind || '').toLowerCase().replace(/\s+/g, '');
-            var fileName = (files[j].name || files[j].filename || '').toLowerCase();
-            console.log('  Against file:', fileName, 'kind:', fileKind, 'docType:', docType);
+            var fileKind = (files[j].kind || '').toLowerCase().replace(/[\s_]+/g, '');
+            var fileNameRaw = (files[j].name || files[j].filename || '').toLowerCase();
+            var fileNameNorm = fileNameRaw.replace(/[\s_]+/g, '');
+            console.log('  Against file:', fileNameRaw, 'kind:', fileKind, 'docType:', docType);
             if (requiredDocs[i].toLowerCase() === 'order sheet') {
               if (fileKind === 'order' || fileKind === 'ordersheet') {
                 console.log('    Matched:', fileKind, 'for order sheet');
                 found = true;
                 break;
               }
-            } else if (fileKind === docType) {
-              console.log('    Matched:', fileKind, 'for', docType);
+            } else if (fileKind === docType || fileNameNorm.includes(docType)) {
+              console.log('    Matched:', fileKind || fileNameRaw, 'for', docType);
               found = true;
               break;
             }
@@ -486,10 +471,14 @@ export default function registerSalesReview(app){
           var r = await fetch('/api/po/submit', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ bid_id: bid })
+            body: JSON.stringify({ bidId: bid })
           });
           if(!r.ok) throw new Error('Submit failed (HTTP ' + r.status + ')');
-          alert('Successfully submitted to Purchasing!');
+          var payload = null;
+          try { payload = await r.json(); }
+          catch(_){ /* ignore */ }
+          var poDisplay = payload && payload.po_id ? ('PO #' + payload.po_id) : 'Draft created';
+          alert('Successfully submitted to Purchasing!\n' + poDisplay);
           location.href = '/sales-home';
         }catch(e){
           alert('Submit failed: ' + (e && e.message ? e.message : 'Unknown error'));

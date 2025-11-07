@@ -2,7 +2,142 @@ import express from "express";
 import { pool } from "../db.js";
 import fs from "node:fs";
 import path from "node:path";
+import { requireRoleApi } from "./auth.js";
 const router = express.Router();
+
+const SUBMIT_ROLES = ["admin", "ops", "sales", "purchasing"];
+
+function computeNeededBy(installDate) {
+  if (!installDate) return null;
+  const d = new Date(installDate);
+  if (Number.isNaN(d.valueOf())) return null;
+  d.setDate(d.getDate() - 14);
+  return d.toISOString().slice(0, 10);
+}
+
+async function handleSubmitToPurchasing(req, res) {
+  const rawBid = req.body?.bidId ?? req.body?.bid_id;
+  const bidId = Number(rawBid);
+  if (!Number.isFinite(bidId) || bidId <= 0) {
+    res.status(400).json({ error: 'bad_bid_id' });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const bidResult = await client.query(
+      `SELECT b.id, b.job_id, j.install_date
+         FROM public.bids b
+         LEFT JOIN public.jobs j ON j.id = b.job_id
+        WHERE b.id = $1
+        LIMIT 1`,
+      [bidId]
+    );
+
+    if (!bidResult.rowCount) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'bid_not_found' });
+      return;
+    }
+
+    const bid = bidResult.rows[0];
+    const jobId = bid.job_id || null;
+    const installDate = bid.install_date || null;
+
+    let purchaseOrder = null;
+    try {
+      const poInsert = await client.query(
+        `INSERT INTO public.purchase_orders (job_id, vendor, status)
+         VALUES ($1, $2, 'draft')
+         RETURNING id, status`,
+        [jobId, 'TBD']
+      );
+      purchaseOrder = poInsert.rows[0] || null;
+    } catch (poErr) {
+      const code = poErr?.code;
+      const message = String(poErr?.message || '').toLowerCase();
+      if (!(code === '42P01' || code === '42703' || message.includes('does not exist'))) {
+        throw poErr;
+      }
+      console.warn('[po-submit] purchase_orders insert skipped:', poErr.message);
+    }
+
+    if (jobId) {
+      try {
+        const existing = await client.query(
+          `SELECT 1
+             FROM public.purchase_queue
+            WHERE job_id = $1
+              AND item_name = 'Order verification'
+            LIMIT 1`,
+          [jobId]
+        );
+
+        if (!existing.rowCount) {
+          const neededBy = computeNeededBy(installDate);
+          await client.query(
+            `INSERT INTO public.purchase_queue
+              (job_id, item_name, spec, needed_by, vendor, status)
+             VALUES ($1, $2, $3::jsonb, $4, $5, 'pending')`,
+            [
+              jobId,
+              'Order verification',
+              JSON.stringify({ source: 'po_submit', bid_id: bidId }),
+              neededBy,
+              'TBD'
+            ]
+          );
+        }
+      } catch (queueErr) {
+        const code = queueErr?.code;
+        const message = String(queueErr?.message || '').toLowerCase();
+        if (!(code === '42P01' || code === '42703' || message.includes('does not exist'))) {
+          throw queueErr;
+        }
+        console.warn('[po-submit] purchase_queue insert skipped:', queueErr.message);
+      }
+    }
+
+    try {
+      await client.query(
+        `INSERT INTO public.bid_events (bid_id, event_type, meta)
+         VALUES ($1, 'purchasing_submitted', $2::jsonb)`,
+        [
+          bidId,
+          JSON.stringify({
+            by: req.user?.uid || null,
+            at: new Date().toISOString(),
+            po_id: purchaseOrder?.id || null
+          })
+        ]
+      );
+    } catch (eventErr) {
+      const code = eventErr?.code;
+      const message = String(eventErr?.message || '').toLowerCase();
+      if (!(code === '42P01' || code === '42703' || message.includes('does not exist'))) {
+        throw eventErr;
+      }
+      console.warn('[po-submit] bid_events insert skipped:', eventErr.message);
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      ok: true,
+      bid_id: bidId,
+      job_id: jobId,
+      po_id: purchaseOrder?.id || null,
+      status: purchaseOrder?.status || null
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[po-submit error]', err);
+    res.status(500).json({ error: 'submit_failed' });
+  } finally {
+    client.release();
+  }
+}
 
 // --- LIST POs for dashboard tabs ---
 // ...existing code...
@@ -33,6 +168,11 @@ router.get('/api/po/list', async (req, res) => {
   } catch (e) {
     console.error('po/list', e); res.status(500).json({ error: 'server_error' });
   }
+});
+
+// --- Submit PO stub from Sales Review ---
+router.post('/api/po/submit', requireRoleApi(SUBMIT_ROLES), async (req, res) => {
+  await handleSubmitToPurchasing(req, res);
 });
 
 // --- CREATE a bare PO (used by + New PO) ---
@@ -296,30 +436,9 @@ router.get("/jobs/:jobId/material-ready", async (req, res) => {
   res.json(rows[0] || { job_id: jobId, material_ready:false, req:0, rec:0 });
 });
 
-/* Submit bid to purchasing (sales workflow) */
-router.post('/po/submit', async (req, res) => {
-  const bidId = Number(req.body?.bid_id);
-  if (!bidId) return res.status(400).json({ error:'missing_bid_id' });
-  try{
-    // 1) mark bid purchasing status
-    await pool.query(`UPDATE public.bids SET purchasing_status='waiting', updated_at=now() WHERE id=$1`, [bidId]);
-
-    // 2) lookup job_id
-    const r = await pool.query(`SELECT job_id FROM public.bids WHERE id=$1`, [bidId]);
-    const jobId = r.rows[0]?.job_id || null;
-
-    // 3) notify Purchasing via webhook
-    const hook = process.env.N8N_OPS_STATUS_WEBHOOK;
-    if (hook) {
-      await fetch(hook, { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ event:'submit_to_purchasing', bid_id: bidId, job_id: jobId }) });
-    }
-
-    res.json({ ok:true, bid_id: bidId, job_id: jobId });
-  }catch(e){
-    console.error('[PO SUBMIT]', e);
-    res.status(500).json({ error:'submit_failed' });
-  }
+/* Submit bid to purchasing (sales workflow legacy alias) */
+router.post('/po/submit', requireRoleApi(SUBMIT_ROLES), async (req, res) => {
+  await handleSubmitToPurchasing(req, res);
 });
 
 /* List all POs with summary */
