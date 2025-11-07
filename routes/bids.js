@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import db from "../db.js";
+import { requireRoleApi } from "./auth.js";
 import nodemailer from 'nodemailer';
 import puppeteer from 'puppeteer';
 import fs from 'fs';
@@ -48,6 +49,31 @@ function deepMerge(a = {}, b = {}) {
     }
   }
   return out;
+}
+
+function isHttpUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeDocUrl(rawUrl, baseOrigin = "") {
+  const value = String(rawUrl ?? "").trim();
+  if (!value) return null;
+  if (value.startsWith("/")) return value;
+  if (isHttpUrl(value)) return value;
+  if (baseOrigin) {
+    try {
+      return new URL(value, baseOrigin).toString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 

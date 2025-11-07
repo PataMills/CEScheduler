@@ -125,6 +125,18 @@ a{color:#9abaff}</style>
   };
 }
 
+export function requireRoleApi(allowedRoles = []) {
+  return (req, res, next) => {
+    requireAuth(req, res, () => {
+      const role = req.user?.role;
+      if (allowedRoles.length && !allowedRoles.includes(role)) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+      next();
+    });
+  };
+}
+
 
 router.use(cookieParser());
 router.use(express.json());
