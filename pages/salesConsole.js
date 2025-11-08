@@ -161,50 +161,65 @@ export default function registerSalesConsole(app) {
 
   <script>
     (function(){
-      const $ = (sel, ctx=document) => ctx.querySelector(sel);
-      const fmt = n => (isFinite(n) ? n.toLocaleString(undefined,{style:'currency',currency:'USD'}) : '—');
+      const q = (sel, ctx = document) => ctx.querySelector(sel);
+      const money = (n) => {
+        n = Number(n || 0);
+        return n.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+      };
+      const pct = (n) => {
+        n = Number(n || 0);
+        return (n * 100).toFixed(0) + '%';
+      };
       const noticeEl = document.getElementById('notice');
+      const orgHeaders = { headers: { 'X-Org-Id': '1' } };
 
       function showNotice(msg) {
         noticeEl.textContent = msg;
         noticeEl.style.display = 'block';
         clearTimeout(window.__noticeTimer);
-        window.__noticeTimer = setTimeout(()=>{ noticeEl.style.display='none';}, 2400);
+        window.__noticeTimer = setTimeout(() => {
+          noticeEl.style.display = 'none';
+        }, 2400);
       }
 
-      // Populate header user
-      fetch('/api/me').then(r => r.ok ? r.json() : null).then(d => {
-        if (d && d.name) document.getElementById('me').textContent = d.name;
-        document.getElementById('meName').textContent = d?.name || '—';
-      }).catch(()=>{});
-
-      function getQueryParam(name){
-        const params = new URLSearchParams(window.location.search);
-        return params.get(name);
-      }
+      fetch('/api/me')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          document.getElementById('meName').textContent = d?.name || '—';
+        })
+        .catch(() => {});
 
       const bidInput = document.getElementById('bidInput');
       const btnLoad = document.getElementById('btnLoad');
       const hintText = document.getElementById('hintText');
 
-      btnLoad.addEventListener('click', ()=> {
-        const id = (bidInput.value||'').trim();
-        if(!id){ showNotice('Enter a bid id'); return; }
-        loadBid(id);
+      btnLoad.addEventListener('click', () => {
+        const id = Number(bidInput.value || '');
+        if (!Number.isFinite(id)) {
+          showNotice('Enter a bid id');
+          return;
+        }
+        loadBidIntoConsole(id).catch((err) => {
+          console.error(err);
+          showNotice('Failed to load bid');
+        });
       });
 
-      document.getElementById('openPreviewLink').addEventListener('click', ()=>{
-        const id = (bidInput.value||'').trim();
-        if(!id){ showMessage('Enter a bid id'); return; }
-        window.open('/sales-quote?bid='+encodeURIComponent(id),'_blank');
+      document.getElementById('openPreviewLink').addEventListener('click', () => {
+        const id = Number(bidInput.value || '');
+        if (!Number.isFinite(id)) {
+          showNotice('Enter a bid id');
+          return;
+        }
+        window.open('/sales-quote?bid=' + encodeURIComponent(id), '_blank');
       });
 
       const startupId = "${bidParam}";
       if (startupId) {
         bidInput.value = startupId;
-        loadBid(startupId);
+        loadBidIntoConsole(Number(startupId)).catch(console.error);
       } else {
-        hintText.textContent = "Tip: append ?bid=123 to the URL to auto-load a bid.";
+        hintText.textContent = 'Tip: append ?bid=123 to the URL to auto-load a bid.';
       }
 
       function setVisible(id, visible) {
@@ -213,104 +228,106 @@ export default function registerSalesConsole(app) {
         el.style.display = visible ? '' : 'none';
       }
 
-      // Fetch helpers
-      async function fetchJSON(url, options) {
-        const r = await fetch(url, options);
-        if(!r.ok) throw new Error('Request failed: '+r.status+' '+r.statusText);
-        return await r.json();
+      async function fetchJSON(url) {
+        const r = await fetch(url, orgHeaders);
+        if (!r.ok) throw new Error(url + ' → ' + r.status);
+        return r.json();
       }
 
-      async function loadBid(id){
-        try {
-          setVisible('summaryCard', false);
-          setVisible('totalsCard', false);
-          setVisible('itemsCard', false);
-          setVisible('actionsRow', false);
-          document.getElementById('itemsBody').innerHTML = '';
-          hintText.textContent = 'Loading…';
+      async function loadBidIntoConsole(bidId) {
+        setVisible('summaryCard', false);
+        setVisible('totalsCard', false);
+        setVisible('itemsCard', false);
+        setVisible('actionsRow', false);
+        q('#itemsBody').innerHTML = '';
+        hintText.textContent = 'Loading…';
 
-          // fetch details in parallel
-          const [details, totals, customer, lines] = await Promise.all([
-            fetchJSON('/api/bids/'+id+'/details').catch(()=>null),
-            fetchJSON('/api/bids/'+id+'/totals').catch(()=>null),
-            fetchJSON('/api/bids/'+id+'/customer-info').catch(()=>null),
-            fetchJSON('/api/bids/'+id+'/columns-details').catch(()=>({rows:[]}))
+        try {
+          const [info, totals, model, preview] = await Promise.all([
+            fetchJSON('/api/bids/' + bidId + '/customer-info').catch(() => null),
+            fetchJSON('/api/bids/' + bidId + '/totals').catch(() => null),
+            fetchJSON('/api/bids/' + bidId + '/model').catch(() => ({})),
+            fetchJSON('/api/bids/' + bidId + '/preview').catch(() => [])
           ]);
 
-          if(!details){ showNotice('Could not load bid #'+id); hintText.textContent=''; return; }
-
-          // Summary
-          setVisible('summaryCard', true);
-          document.getElementById('summaryBid').textContent = '#'+id;
-          document.getElementById('summaryCustomer').textContent = (customer && (customer.company_name || customer.first_name)) || '—';
-          document.getElementById('summaryProject').textContent = details?.project_name || '—';
-          document.getElementById('summaryStatus').innerHTML = '<span class="pill">'+(details?.status || '—')+'</span>';
-
-          // Totals
-          if (totals) {
-            setVisible('totalsCard', true);
-            document.getElementById('totalSubtotal').textContent = fmt(totals.subtotal_after);
-            document.getElementById('totalTax').textContent = fmt(totals.tax_amount);
-            document.getElementById('totalOverall').textContent = fmt(totals.total);
-            document.getElementById('totalDepPct').textContent = Math.round((totals.deposit_pct||0)*100) + '%';
-            document.getElementById('totalDepAmt').textContent = fmt(totals.deposit||0);
-            document.getElementById('totalRemain').textContent = fmt(totals.remaining||0);
+          if (!info) {
+            showNotice('Bid #' + bidId + ' not found');
+            hintText.textContent = '';
+            return;
           }
 
-          // Items
-          const body = document.getElementById('itemsBody');
-          body.innerHTML = '';
-          (Array.isArray(lines) ? lines : []).forEach(row => {
+          setVisible('summaryCard', true);
+          q('#summaryBid').textContent = '#' + bidId;
+          q('#summaryCustomer').textContent = info.customer_name || '—';
+          q('#summaryProject').textContent = info.project_name || '—';
+          q('#summaryStatus').innerHTML = '<span class="pill">' + (info.status || 'draft') + '</span>';
+
+          if (totals) {
+            setVisible('totalsCard', true);
+            q('#totalSubtotal').textContent = money(totals.subtotal ?? totals.subtotal_after ?? totals.subtotal_after_discount);
+            q('#totalTax').textContent = money(totals.tax ?? totals.tax_amount);
+            q('#totalOverall').textContent = money(totals.total ?? totals.total_amount);
+            q('#totalDepPct').textContent = pct(totals.deposit_pct);
+            q('#totalDepAmt').textContent = money(totals.deposit_amount ?? totals.deposit);
+            q('#totalRemain').textContent = money(totals.remaining ?? totals.remaining_amount);
+          }
+
+          const body = q('#itemsBody');
+          const rows = Array.isArray(preview) ? preview : [];
+          rows.forEach((row) => {
             const tr = document.createElement('tr');
-            const desc = document.createElement('td');
-            const qty = document.createElement('td');
-            const uprice = document.createElement('td');
-            const ltot = document.createElement('td');
-            desc.textContent = row.description || row.column_label || '—';
-            qty.className='text-right';
-            uprice.className='text-right';
-            ltot.className='text-right';
-            qty.textContent = (row.qty_total!=null? row.qty_total : row.qty) || '—';
-            uprice.textContent = row.unit_price!=null ? '$'+Number(row.unit_price).toFixed(2) : '—';
-            const total = (Number(row.unit_price||0) * Number(row.qty_total||row.qty||0));
-            ltot.textContent = isFinite(total) ? '$'+total.toFixed(2) : '—';
-            tr.appendChild(desc); tr.appendChild(qty); tr.appendChild(uprice); tr.appendChild(ltot);
+            const qtyTotal = Number(row.qty_total ?? row.qty ?? 0);
+            const unitPrice = Number(row.unit_price ?? 0);
+            const lineTotal = Number(row.line_total ?? qtyTotal * unitPrice);
+
+            const desc = row.description || row.column_label || '—';
+            const qtyText = qtyTotal ? qtyTotal.toLocaleString() : '—';
+            tr.innerHTML = '<td>' + desc + '</td>' +
+              '<td class="text-right">' + qtyText + '</td>' +
+              '<td class="text-right">' + money(unitPrice) + '</td>' +
+              '<td class="text-right">' + money(lineTotal) + '</td>';
             body.appendChild(tr);
           });
-          setVisible('itemsCard', true);
+          setVisible('itemsCard', rows.length > 0);
 
-          // Actions
           const emailEl = document.getElementById('emailTo');
-          emailEl.value = customer?.email || '';
-          document.getElementById('previewLink').setAttribute('href','/sales-quote?bid='+encodeURIComponent(id));
+          emailEl.value = info.customer_email || '';
+          document.getElementById('previewLink').setAttribute('href', '/sales-quote?bid=' + encodeURIComponent(bidId));
           document.getElementById('btnSendQuote').onclick = async () => {
-            const to = (emailEl.value||'').trim();
-            if(!to){ showNotice('Enter recipient email'); return; }
+            const to = (emailEl.value || '').trim();
+            if (!to) {
+              showNotice('Enter recipient email');
+              return;
+            }
             try {
-              await fetchJSON('/api/bids/'+id+'/email-quote', {
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
+              await fetch('/api/bids/' + bidId + '/email-quote', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Org-Id': '1'
+                },
                 body: JSON.stringify({ to })
               });
-              showNotice('Quote sent to '+to);
-            } catch(e) {
-              console.error(e);
+              showNotice('Quote sent to ' + to);
+            } catch (err) {
+              console.error(err);
               showNotice('Failed to send quote');
             }
           };
           setVisible('actionsRow', true);
 
-          hintText.textContent = '';
+          if (q('#cardsCount')) q('#cardsCount').textContent = model?.cards_count ?? 0;
+          if (q('#unitsCount')) q('#unitsCount').textContent = model?.units_count ?? 0;
 
-        } catch(err) {
+          hintText.textContent = '';
+        } catch (err) {
           console.error(err);
-          showNotice('Error loading bid: '+ err.message);
-          document.getElementById('itemsBody').innerHTML = '';
+          showNotice('Error loading bid: ' + err.message);
           setVisible('summaryCard', false);
           setVisible('totalsCard', false);
           setVisible('itemsCard', false);
           setVisible('actionsRow', false);
-          document.getElementById('hintText').textContent = '';
+          hintText.textContent = '';
         }
       }
     })();

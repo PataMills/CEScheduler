@@ -39,6 +39,44 @@ const TOTALS_SQL = `
    WHERE bid_id = $1
 `;
 
+const QUOTE_TOTALS_VIEW_SQL = `
+  SELECT
+    COALESCE(subtotal, 0)::float       AS subtotal,
+    COALESCE(tax, 0)::float            AS tax,
+    COALESCE(total, 0)::float          AS total,
+    COALESCE(deposit_amount, 0)::float AS deposit_amount,
+    COALESCE(remaining, 0)::float      AS remaining,
+    COALESCE(deposit_pct, 0)::float    AS deposit_pct,
+    COALESCE(tax_rate, 0)::float       AS tax_rate
+  FROM public.bid_quote_totals
+  WHERE bid_id = $1
+`;
+
+const QUOTE_TOTALS_COMPUTE_SQL = `
+  WITH b AS (
+    SELECT id, COALESCE(tax_rate,0) AS tax_rate, COALESCE(deposit_pct,0) AS deposit_pct
+      FROM public.bids WHERE id = $1
+  ),
+  u AS (
+    SELECT COALESCE(SUM(units),0) AS units FROM public.bid_columns WHERE bid_id = $1
+  ),
+  l AS (
+    SELECT COALESCE(SUM(qty_per_unit * unit_price),0) AS per_unit FROM public.bid_lines WHERE bid_id = $1
+  ),
+  raw AS (
+    SELECT (u.units * l.per_unit) AS subtotal FROM u, l
+  )
+  SELECT
+    COALESCE(raw.subtotal,0)::float                                        AS subtotal,
+    ROUND(COALESCE(raw.subtotal,0) * b.tax_rate, 2)::float                 AS tax,
+    ROUND(COALESCE(raw.subtotal,0) * (1 + b.tax_rate), 2)::float           AS total,
+    ROUND(COALESCE(raw.subtotal,0) * (1 + b.tax_rate) * b.deposit_pct,2)::float AS deposit_amount,
+    ROUND(COALESCE(raw.subtotal,0) * (1 + b.tax_rate) * (1 - b.deposit_pct),2)::float AS remaining,
+    b.deposit_pct::float,
+    b.tax_rate::float
+  FROM raw, b;
+`;
+
 function ensurePlainObject(val) {
   return val && typeof val === "object" && !Array.isArray(val) ? val : {};
 }
@@ -340,21 +378,38 @@ async function appendDocToArchive(archive, doc) {
 
 function mapTotalsRow(row, source) {
   if (!row) return null;
-  const subtotalAfter = toNumberOrNull(row.subtotal_after ?? row.subtotal_after_discount);
-  const ccFeeAmount = toNumberOrNull(row.cc_fee_amount ?? row.cc_fee);
+
+  const subtotal = toNumberOrZero(
+    row.subtotal ?? row.subtotal_after ?? row.subtotal_after_discount
+  );
+  const taxRate = toNumberOrZero(row.tax_rate ?? row.tax_rate_pct);
+  const tax = toNumberOrZero(row.tax ?? row.tax_amount);
+  const total = toNumberOrZero(row.total ?? row.total_amount);
+  const depositPct = toNumberOrZero(row.deposit_pct);
+  const depositAmount = toNumberOrZero(row.deposit_amount);
+  const remaining = toNumberOrZero(
+    row.remaining ?? row.remaining_amount ?? row.remaining_balance
+  );
+  const ccFeeAmount = toNumberOrZero(row.cc_fee_amount ?? row.cc_fee);
+  const ccFeePct = toNumberOrZero(row.cc_fee_pct);
+
   return {
     bid_id: row.bid_id ?? row.id ?? null,
-    subtotal_after_discount: toNumberOrNull(row.subtotal_after_discount ?? row.subtotal_after ?? subtotalAfter),
-    subtotal_after: subtotalAfter,
-    tax_rate: toNumberOrNull(row.tax_rate ?? row.tax_rate_pct),
-    tax_amount: toNumberOrNull(row.tax_amount),
-    cc_fee_pct: toNumberOrNull(row.cc_fee_pct),
-    cc_fee: toNumberOrNull(row.cc_fee ?? ccFeeAmount),
+    subtotal,
+    subtotal_after: subtotal,
+    subtotal_after_discount: subtotal,
+    tax_rate: taxRate,
+    tax,
+    tax_amount: tax,
+    cc_fee_pct: ccFeePct,
+    cc_fee: ccFeeAmount,
     cc_fee_amount: ccFeeAmount,
-    total: toNumberOrNull(row.total ?? row.total_amount),
-    deposit_pct: toNumberOrNull(row.deposit_pct),
-    deposit_amount: toNumberOrNull(row.deposit_amount),
-    remaining_amount: toNumberOrNull(row.remaining_amount ?? row.remaining_balance),
+    total,
+    total_amount: total,
+    deposit_pct: depositPct,
+    deposit_amount: depositAmount,
+    remaining,
+    remaining_amount: remaining,
     updated_at: row.updated_at || null,
     source,
   };
@@ -420,20 +475,60 @@ async function loadBidDetails(bidId) {
 }
 
 async function loadBidTotals(bidId) {
-  const { rows } = await pool.query(TOTALS_SQL, [bidId]);
-  if (rows.length) {
-    return mapTotalsRow(rows[0], "grand_totals");
+  const id = Number(bidId);
+  if (!Number.isFinite(id)) return null;
+
+  // Preferred: view-based canonical totals
+  try {
+    const viewQ = await pool.query(QUOTE_TOTALS_VIEW_SQL, [id]);
+    if (viewQ.rows.length) {
+      return mapTotalsRow({ ...viewQ.rows[0], bid_id: id }, "bid_quote_totals");
+    }
+  } catch (err) {
+    if (err?.code !== "42P01") {
+      console.warn("[loadBidTotals] bid_quote_totals view error:", err.message);
+    }
   }
-  const fallback = await pool.query(
-    `SELECT id AS bid_id, subtotal_after_discount, tax_rate, tax_rate_pct,
-            tax_amount, cc_fee_pct, cc_fee_amount, total, total_amount, deposit_pct,
-            deposit_amount, remaining_balance
-       FROM public.bids WHERE id = $1`,
-    [bidId]
-  );
-  if (!fallback.rows.length) return null;
-  const shaped = mapTotalsRow(fallback.rows[0], "bids");
-  return shaped;
+
+  // Legacy aggregate table
+  try {
+    const totalsQ = await pool.query(TOTALS_SQL, [id]);
+    if (totalsQ.rows.length) {
+      return mapTotalsRow(totalsQ.rows[0], "grand_totals");
+    }
+  } catch (err) {
+    if (err?.code !== "42P01") {
+      throw err;
+    }
+  }
+
+  // Computed fallback if view/table missing
+  try {
+    const computedQ = await pool.query(QUOTE_TOTALS_COMPUTE_SQL, [id]);
+    if (computedQ.rows.length) {
+      return mapTotalsRow({ ...computedQ.rows[0], bid_id: id }, "computed");
+    }
+  } catch (err) {
+    if (err?.code !== "42P01") {
+      console.warn("[loadBidTotals] compute fallback error:", err.message);
+    }
+  }
+
+  // Last resort: raw columns from bids table
+  try {
+    const fallback = await pool.query(
+      `SELECT id AS bid_id, subtotal_after_discount, tax_rate, tax_rate_pct,
+              tax_amount, cc_fee_pct, cc_fee_amount, total, total_amount, deposit_pct,
+              deposit_amount, remaining_balance
+         FROM public.bids WHERE id = $1`,
+      [id]
+    );
+    if (!fallback.rows.length) return null;
+    return mapTotalsRow(fallback.rows[0], "bids");
+  } catch (err) {
+    if (err?.code === "42P01") return null;
+    throw err;
+  }
 }
 
 function requireAdminOrPurchasing(req, res, next) {
@@ -456,6 +551,39 @@ router.get("/recent", requireAuth, async (req, res) => {
   } catch (e) {
     console.error("[/api/bids/recent]", e);
     res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// GET /api/bids/:id/customer-info
+router.get("/:id/customer-info", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: "bad-id" });
+  }
+
+  try {
+    const sql = `
+      SELECT
+        b.id,
+        COALESCE(b.customer_name, '')       AS customer_name,
+        COALESCE(b.customer_email, '')      AS customer_email,
+        COALESCE(b.project_name, '')        AS project_name,
+        COALESCE(b.builder, '')             AS builder,
+        COALESCE(b.home_address, '')        AS home_address,
+        COALESCE(b.lot_plan_name, '')       AS lot_plan_name,
+        COALESCE(b.sales_person, '')        AS sales_person,
+        COALESCE(b.status, 'draft')         AS status,
+        COALESCE(b.deposit_pct, 0)::float   AS deposit_pct,
+        COALESCE(b.tax_rate, 0)::float      AS tax_rate
+      FROM public.bids b
+      WHERE b.id = $1
+    `;
+    const { rows } = await pool.query(sql, [id]);
+    if (!rows.length) return res.status(404).json({ error: "not-found" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("customer-info error", err);
+    res.status(500).json({ error: "customer-info" });
   }
 });
 
@@ -1300,6 +1428,66 @@ router.post("/:id/totals", requireAuth, async (req, res) => {
       return res.status(500).json({ error: "table_missing" });
     }
     console.error("[/api/bids/:id/totals:post]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// GET /api/bids/:id/summary
+router.get("/:id/summary", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "bad-id" });
+  }
+
+  try {
+    const details = await loadBidDetails(bidId);
+    if (!details) {
+      return res.status(404).json({ error: "not-found" });
+    }
+
+    const totals = await loadBidTotals(bidId);
+    const model = await loadBidModel(bidId);
+
+    const info = {
+      id: details.id,
+      status: details.status || "draft",
+      customer_name: details.homeowner || details.customer_name || null,
+      customer_email: details.customer_email || null,
+      project_name: details.projectSnapshot?.project_name || details.projectSnapshot?.name || details.name || null,
+      builder: details.onboarding?.builder || null,
+      home_address: details.home_address || null,
+      lot_plan_name: details.onboarding?.lot_plan_name || null,
+      sales_person: details.sales_person || null,
+      tax_rate: details.tax_rate ?? null,
+      deposit_pct: details.deposit_pct ?? null
+    };
+
+    const outTotals = totals
+      ? {
+          subtotal:
+            totals.subtotal ??
+            totals.subtotal_after ??
+            totals.subtotal_after_discount ??
+            0,
+          tax: totals.tax ?? totals.tax_amount ?? 0,
+          total: totals.total ?? totals.total_amount ?? 0,
+          deposit_pct: totals.deposit_pct ?? info.deposit_pct ?? 0,
+          deposit_amount: totals.deposit_amount ?? 0,
+          remaining: totals.remaining ?? totals.remaining_amount ?? 0,
+          tax_rate: totals.tax_rate ?? info.tax_rate ?? 0
+        }
+      : null;
+
+    const outModel = model
+      ? {
+          cards_count: model.cards_count ?? 0,
+          units_count: model.units_count ?? 0
+        }
+      : { cards_count: 0, units_count: 0 };
+
+    res.json({ ok: true, info, totals: outTotals, model: outModel });
+  } catch (err) {
+    console.error("[/api/bids/:id/summary]", err);
     res.status(500).json({ error: "server_error" });
   }
 });
