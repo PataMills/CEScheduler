@@ -8,7 +8,7 @@ const allow = (_req, _res, next) => next(); // TODO: swap to your real auth guar
 const DETAILS_SQL = `
   SELECT id, job_id, builder_id, name, status, notes,
          sales_person, onboarding, doc_links, calc_snapshot,
-         subtotal_after_discount, subtotal_after, tax_rate, tax_rate_pct,
+         subtotal_after_discount, tax_rate, tax_rate_pct,
          tax_amount, cc_fee_pct, cc_fee_amount, total, total_amount,
          deposit_pct, deposit_amount, remaining_balance, promised_install_date,
          customer_email, purchasing_status, ready_for_schedule, po_number,
@@ -131,7 +131,7 @@ async function loadBidTotals(bidId) {
     return mapTotalsRow(rows[0], "grand_totals");
   }
   const fallback = await pool.query(
-    `SELECT id AS bid_id, subtotal_after_discount, subtotal_after, tax_rate, tax_rate_pct,
+    `SELECT id AS bid_id, subtotal_after_discount, tax_rate, tax_rate_pct,
             tax_amount, cc_fee_pct, cc_fee_amount, total, total_amount, deposit_pct,
             deposit_amount, remaining_balance
        FROM public.bids WHERE id = $1`,
@@ -378,22 +378,20 @@ router.post("/:id/totals", requireAuth, async (req, res) => {
     await pool.query(
       `UPDATE public.bids
           SET subtotal_after_discount = $2,
-              subtotal_after = $3,
-              tax_rate = $4,
-              tax_amount = $5,
-              cc_fee_pct = $6,
-              cc_fee_amount = $7,
-              total = $8,
-              total_amount = $8,
-              deposit_pct = $9,
-              deposit_amount = $10,
-              remaining_balance = $11,
+              tax_rate = $3,
+              tax_amount = $4,
+              cc_fee_pct = $5,
+              cc_fee_amount = $6,
+              total = $7,
+              total_amount = $7,
+              deposit_pct = $8,
+              deposit_amount = $9,
+              remaining_balance = $10,
               updated_at = now()
         WHERE id = $1`,
       [
         bidId,
         snapshot.subtotal_after_discount,
-        snapshot.subtotal_after,
         snapshot.tax_rate,
         snapshot.tax_amount,
         snapshot.cc_fee_pct,
