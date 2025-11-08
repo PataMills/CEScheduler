@@ -459,20 +459,159 @@ router.get("/recent", requireAuth, async (req, res) => {
   }
 });
 
-// Basic columns for a bid
-router.get("/:id/columns", allow, async (req, res) => {
+// Basic columns for a bid (cards data)
+router.get("/:id/columns", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isInteger(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
   try {
-    const { rows } = await pool.query(
-      `SELECT id, bid_id, label, room, unit_type, color, units, sort_order
-         FROM public.bid_columns
-        WHERE bid_id = $1
-        ORDER BY sort_order, id`,
-      [req.params.id]
-    );
-    res.json(rows);
+    if (!(await tableExists("bid_columns"))) {
+      return res.json([]);
+    }
+
+    const available = await getTableColumns("bid_columns");
+    if (!available.includes("bid_id")) {
+      return res.json([]);
+    }
+    const selectParts = [];
+
+    const addField = (column, fallback) => {
+      if (available.includes(column)) {
+        selectParts.push(column);
+      } else if (fallback) {
+        selectParts.push(`${fallback} AS ${column}`);
+      }
+    };
+
+  addField("id");
+  addField("bid_id", "NULL::int AS bid_id");
+    addField("label", "NULL::text AS label");
+    addField("room", "NULL::text AS room");
+    addField("unit_type", "NULL::text AS unit_type");
+    addField("color", "NULL::text AS color");
+    addField("units", "0::numeric AS units");
+    addField("sort_order", "0::int AS sort_order");
+    addField("notes", "NULL::text AS notes");
+    addField("updated_at", "NULL::timestamptz AS updated_at");
+
+    if (!selectParts.length) {
+      selectParts.push("*");
+    }
+
+    const sql = `SELECT ${selectParts.join(", ")}
+                   FROM public.bid_columns
+                  WHERE bid_id = $1
+                  ORDER BY sort_order, id`;
+    const { rows } = await pool.query(sql, [bidId]);
+    res.json(rows || []);
   } catch (e) {
-    console.error("[/api/bids/:id/columns]", e);
-    res.status(500).json({ error: "server_error" });
+    console.error("[GET /api/bids/:id/columns]", e);
+    res.status(500).json({ error: "db_error", message: e.message });
+  }
+});
+
+// Bid lines (rows table)
+router.get("/:id/lines", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isInteger(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    if (!(await tableExists("bid_lines"))) {
+      return res.json([]);
+    }
+
+    const available = await getTableColumns("bid_lines");
+    if (!available.includes("bid_id")) {
+      return res.json([]);
+    }
+    const selectParts = [];
+    const addField = (column, fallback) => {
+      if (available.includes(column)) {
+        selectParts.push(column);
+      } else if (fallback) {
+        selectParts.push(`${fallback} AS ${column}`);
+      }
+    };
+
+  addField("id");
+  addField("bid_id", "NULL::int AS bid_id");
+    addField("code", "NULL::text AS code");
+    addField("description", "NULL::text AS description");
+    addField("category", "NULL::text AS category");
+    addField("unit_of_measure", "NULL::text AS unit_of_measure");
+    addField("qty_per_unit", "0::numeric AS qty_per_unit");
+    addField("unit_cost", "0::numeric AS unit_cost");
+    addField("unit_price", "0::numeric AS unit_price");
+    addField("pricing_method", "NULL::text AS pricing_method");
+    addField("sort_order", "0::int AS sort_order");
+    addField("active", "NULL::boolean AS active");
+    addField("notes", "NULL::text AS notes");
+
+    if (!selectParts.length) {
+      selectParts.push("*");
+    }
+
+    const sql = `SELECT ${selectParts.join(", ")}
+                   FROM public.bid_lines
+                  WHERE bid_id = $1
+                  ORDER BY sort_order, id`;
+    const { rows } = await pool.query(sql, [bidId]);
+    res.json(rows || []);
+  } catch (e) {
+    console.error("[GET /api/bids/:id/lines]", e);
+    res.status(500).json({ error: "db_error", message: e.message });
+  }
+});
+
+// Bid line cell overrides
+router.get("/:id/line-cells", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isInteger(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    if (!(await tableExists("bid_line_cells"))) {
+      return res.json([]);
+    }
+
+    const available = await getTableColumns("bid_line_cells");
+    if (!available.includes("bid_id")) {
+      return res.json([]);
+    }
+    const selectParts = [];
+    const addField = (column, fallback) => {
+      if (available.includes(column)) {
+        selectParts.push(column);
+      } else if (fallback) {
+        selectParts.push(`${fallback} AS ${column}`);
+      }
+    };
+
+  addField("id");
+  addField("bid_id", "NULL::int AS bid_id");
+    addField("bid_line_id", "NULL::int AS bid_line_id");
+    addField("bid_column_id", "NULL::int AS bid_column_id");
+    addField("qty_override", "NULL::numeric AS qty_override");
+    addField("price_override", "NULL::numeric AS price_override");
+    addField("computed_qty", "NULL::numeric AS computed_qty");
+    addField("computed_price", "NULL::numeric AS computed_price");
+    addField("notes", "NULL::text AS notes");
+
+    if (!selectParts.length) {
+      selectParts.push("*");
+    }
+
+    const sql = `SELECT ${selectParts.join(", ")}
+                   FROM public.bid_line_cells
+                  WHERE bid_id = $1
+                  ORDER BY bid_line_id, bid_column_id, id`;
+    const { rows } = await pool.query(sql, [bidId]);
+    res.json(rows || []);
+  } catch (e) {
+    console.error("[GET /api/bids/:id/line-cells]", e);
+    res.status(500).json({ error: "db_error", message: e.message });
   }
 });
 
