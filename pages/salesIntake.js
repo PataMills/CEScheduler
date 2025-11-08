@@ -345,6 +345,52 @@ async function saveOptionValue(key, value){
   return { updated:true, list: updated };
 }
 
+function showNotice(message, type = 'info') {
+  const tag = type === 'error' ? 'error' : 'log';
+  console[tag]('[notice]', message);
+}
+
+function setInputValue(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.value = value != null ? value : '';
+}
+
+function setText(selector, value) {
+  const el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+  if (!el) return;
+  const text = value == null || String(value).trim() === '' ? '—' : String(value).trim();
+  el.textContent = text;
+}
+
+function money(value) {
+  const num = Number(value || 0);
+  return num.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+}
+
+function pct(value) {
+  const num = Number(value || 0);
+  return (num * 100).toFixed(2) + '%';
+}
+
+function renderPreviewTable(rows) {
+  // TODO: hook into Sales Intake preview table when available
+  if (!Array.isArray(rows)) return;
+  console.debug('[preview] rows', rows.length);
+}
+
+function renderPerCardTotals(rows) {
+  if (!Array.isArray(rows)) return;
+  const sums = {};
+  rows.forEach((row) => {
+    const key = row.column_id;
+    if (key == null) return;
+    const lineTotal = Number(row.line_total || 0);
+    sums[key] = (sums[key] || 0) + lineTotal;
+  });
+  console.debug('[preview] per-card totals', sums);
+}
+
 // Core save that returns the bid id. Does NOT open cards view.
 async function saveDraftCore(){
   const missing = validate();
@@ -1078,135 +1124,233 @@ document.addEventListener('DOMContentLoaded', async function(){
   
   // --- Prefill for edit mode ---
   async function prefillBid(bidId) {
+    if (!Number.isFinite(bidId)) return;
+
+    const opts = { headers: { 'X-Org-Id': '1' } };
+    const hint = document.getElementById('hintText');
+    if (hint) hint.textContent = 'Loading…';
+
     try {
-      console.log('[PREFILL] Loading bid', bidId);
+  const summaryRes = await fetch('/api/bids/' + bidId + '/summary', opts);
+      if (!summaryRes.ok) {
+        showNotice('Could not load bid summary', 'error');
+        if (hint) hint.textContent = '';
+        return;
+      }
 
-      // Prefer summary (pulls from bids row with aliases), then merge onboarding details if present
-      let ob = {};
-      try {
-        const s = await fetch('/api/bids/' + bidId + '/summary');
-        if (s.ok) {
-          const sum = await s.json();
-          const b = sum?.bid || {};
-          ob = {
-            sales_person:    b.sales_person || '',
-            designer:        b.designer || '',
-            customer_type:   b.customer_type || '',
-            builder:         b.builder || '',
-            builder_phone:   b.builder_phone || '',
-            homeowner:       b.homeowner || '',
-            homeowner_phone: b.homeowner_phone || '',
-            home_address:    b.home_address || '',
-            lot_plan:        b.lot_plan || '',
-            install_date:    b.install_date || '',
-            customer_email:  b.customer_email || '',
-            access_notes:    b.access_notes || ''
-          };
-        }
-      } catch(_) {}
+      const summary = await summaryRes.json();
+      if (!summary?.ok) {
+        showNotice('Bid not found', 'error');
+        if (hint) hint.textContent = '';
+        return;
+      }
 
-      // Merge onboarding JSON over summary defaults if available
-      try {
-        const r = await fetch('/api/bids/' + bidId + '/details');
-        if (r.ok) {
-          const d = await r.json();
-          if (d && d.onboarding && typeof d.onboarding === 'object') {
-            ob = Object.assign(ob, d.onboarding);
-          }
-        }
-      } catch(_) {}
+      const info = summary.info || {};
+      const totals = summary.totals || {};
+      const modelSummary = summary.model || {};
 
-      // ---- Fill header fields ----
-      const sp = $('sales_person');
-      if (sp) sp.value = ob.sales_person || '';
-      if ($('designer')) $('designer').value = ob.designer || '';
-      if ($('customer_type')) $('customer_type').value = ob.customer_type || '';
-      if ($('builder_name')) $('builder_name').value = ob.builder || '';
-      if ($('builder_phone')) $('builder_phone').value = ob.builder_phone || '';
-      if ($('homeowner')) $('homeowner').value = ob.homeowner || '';
-      if ($('homeowner_phone')) $('homeowner_phone').value = ob.homeowner_phone || '';
-      if ($('home_address')) $('home_address').value = ob.home_address || '';
-      if ($('lot_plan')) $('lot_plan').value = ob.lot_plan || '';
-      if ($('install_date')) $('install_date').value = ob.install_date ? String(ob.install_date).slice(0,10) : '';
-      if ($('customer_email')) $('customer_email').value = ob.customer_email || '';
-      if ($('access_notes')) $('access_notes').value = ob.access_notes || '';
+      setInputValue('sales_person', info.sales_person || '');
+      setInputValue('builder_name', info.builder || '');
+      setInputValue('home_address', info.home_address || '');
+      setInputValue('lot_plan', info.lot_plan_name || '');
+      setInputValue('customer_email', info.customer_email || '');
+      setInputValue('homeowner', info.customer_name || '');
 
-      // Financials
-      if ($('discount_pct')) $('discount_pct').value = Number(ob.discount_pct || 0);
-      if ($('safety_pct_global')) $('safety_pct_global').value = Number(ob.safety_pct_global || 0);
-      if ($('credit_card')) $('credit_card').value = ob.credit_card ? 'Yes' : 'No';
-      if ($('goal_amt')) $('goal_amt').value = Number(ob.goal_amt || 0);
-      // Deposit %
-      if (ob.deposit_pct != null) {
-        const pct = Math.round(Number(ob.deposit_pct));
-        if ($('deposit_pct')) $('deposit_pct').value = pct;
-        const sel = $('deposit_pct_select');
-        if (sel) {
-          for (let i = 0; i < sel.options.length; ++i) {
-            if (Math.round(Number(sel.options[i].value) * 100) === pct) {
-              sel.selectedIndex = i;
+      // Sidebar snapshot
+      putText('sb_units', (modelSummary.units_count ?? 0).toLocaleString());
+      const subtotalValue = totals.subtotal ?? totals.subtotal_after ?? totals.subtotal_after_discount ?? 0;
+      const taxValue = totals.tax ?? totals.tax_amount ?? 0;
+      const totalValue = totals.total ?? totals.total_amount ?? 0;
+      const remainingValue = totals.remaining ?? totals.remaining_amount ?? 0;
+      const ccFeeValue = totals.cc_fee_amount ?? totals.cc_fee ?? 0;
+
+      putText('sb_subtotal', money(subtotalValue));
+      putText('sb_subtotal_disc', money(subtotalValue));
+      putText('sb_tax_pct', pct(totals.tax_rate ?? info.tax_rate ?? 0));
+      putText('sb_tax_amt', money(taxValue));
+      putText('sb_total', money(totalValue));
+      putText('sb_rem_amt', money(remainingValue));
+  putText('sb_dep_pct', '0.00%');
+  putText('sb_dep_amt', money(0));
+      putText('sb_cc_amt', money(ccFeeValue));
+  putText('sb_cc', 'No');
+  putText('sb_cc_pct', '0.00%');
+
+      const applyDepositFraction = (raw) => {
+        if (raw == null) return;
+        const fraction = raw > 1 ? raw / 100 : raw;
+        const percent = fraction * 100;
+        const depHidden = $('deposit_pct');
+        if (depHidden) depHidden.value = String(Math.round(percent));
+        const depSelect = $('deposit_pct_select');
+        if (depSelect) {
+          let matched = false;
+          for (let i = 0; i < depSelect.options.length; i += 1) {
+            const optFraction = Number(depSelect.options[i].value || 0);
+            if (Math.round(optFraction * 100) === Math.round(percent)) {
+              depSelect.selectedIndex = i;
+              matched = true;
               break;
             }
           }
+          if (!matched) {
+            const opt = document.createElement('option');
+            opt.value = String(fraction);
+            opt.textContent = Math.round(percent) + '%';
+            depSelect.appendChild(opt);
+            depSelect.value = opt.value;
+          }
         }
+        const depositValue = totals.deposit_amount != null ? totals.deposit_amount : totalValue * fraction;
+        putText('sb_dep_pct', percent.toFixed(2) + '%');
+        putText('sb_dep_amt', money(depositValue));
+      };
+
+      applyDepositFraction(totals.deposit_pct ?? info.deposit_pct ?? null);
+
+      // Merge onboarding fields for form inputs
+      let onboarding = {};
+      try {
+  const detailsRes = await fetch('/api/bids/' + bidId + '/details', opts);
+        if (detailsRes.ok) {
+          const det = await detailsRes.json();
+          if (det?.onboarding && typeof det.onboarding === 'object') {
+            onboarding = det.onboarding;
+          }
+        }
+      } catch (err) {
+        console.warn('[prefill] details load failed', err);
       }
-      console.log('[PREFILL] Header fields populated');
 
+      const applyInput = (id, val) => {
+        if (val == null) return;
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (el.tagName === 'SELECT') {
+          el.value = val;
+        } else {
+          setInputValue(id, val);
+        }
+      };
 
-      // Remove starter card
+      applyInput('designer', onboarding.designer ?? info.designer);
+      applyInput('customer_type', onboarding.customer_type ?? info.customer_type);
+      applyInput('sales_person', onboarding.sales_person);
+      applyInput('builder_name', onboarding.builder);
+      applyInput('homeowner', onboarding.homeowner);
+      applyInput('builder_phone', onboarding.builder_phone);
+      applyInput('homeowner_phone', onboarding.homeowner_phone);
+      applyInput('install_date', onboarding.install_date ? String(onboarding.install_date).slice(0, 10) : null);
+      applyInput('access_notes', onboarding.access_notes);
+      applyInput('discount_pct', onboarding.discount_pct);
+      applyInput('safety_pct_global', onboarding.safety_pct_global);
+      applyInput('goal_amt', onboarding.goal_amt);
+      if (onboarding.credit_card != null) {
+        applyInput('credit_card', onboarding.credit_card ? 'Yes' : 'No');
+        putText('sb_cc', onboarding.credit_card ? 'Yes' : 'No');
+        putText('sb_cc_pct', onboarding.credit_card ? '3.00%' : '0.00%');
+      }
+      if (onboarding.installation != null) {
+        applyInput('installation', onboarding.installation ? 'Yes' : 'No');
+      }
+      if (onboarding.delivery != null) {
+        applyInput('delivery', onboarding.delivery ? 'Yes' : 'No');
+      }
+
+      if ((totals.deposit_pct ?? info.deposit_pct ?? null) == null && onboarding.deposit_pct != null) {
+        applyDepositFraction(onboarding.deposit_pct);
+      }
+
+      // Remove starter card and rebuild columns
       const host = $('columnsHost');
       if (host) host.innerHTML = '';
-      console.log('[PREFILL] Cleared columns host');
-      // Fetch columns-details
-      const colsRes = await fetch('/api/bids/' + bidId + '/columns-details');
-      const colsData = colsRes.ok ? await colsRes.json() : {};
-      console.log('[PREFILL] Got columns-details:', colsData);
-      // Fetch columns (labels/units)
-      const modelRes = await fetch('/api/bids/' + bidId + '/model');
-      const modelData = modelRes.ok ? await modelRes.json() : {};
+
+      let columnDetails = {};
+      try {
+  const colsRes = await fetch('/api/bids/' + bidId + '/columns-details', opts);
+        if (colsRes.ok) {
+          columnDetails = await colsRes.json();
+        }
+      } catch (err) {
+        console.warn('[prefill] columns-details load failed', err);
+      }
+
+      let modelData = {};
+      try {
+  const modelRes = await fetch('/api/bids/' + bidId + '/model', opts);
+        if (modelRes.ok) {
+          modelData = await modelRes.json();
+        }
+      } catch (err) {
+        console.warn('[prefill] model load failed', err);
+      }
+
       const columns = Array.isArray(modelData.columns) ? modelData.columns : [];
-      console.log('[PREFILL] Got', columns.length, 'columns from model');
-      for (const col of columns) {
-        const details = colsData[col.column_id] || {};
-        console.log('[PREFILL] Adding column:', col.column_label, 'with details:', details);
-        // Build card data
+      const lines = Array.isArray(modelData.lines) ? modelData.lines : [];
+
+      columns.forEach((col) => {
+        const details = columnDetails[col.column_id] || {};
         const cardData = {
           label: col.column_label,
           units: col.units,
           manufacturer: details.meta?.manufacturer || '',
           species: details.meta?.species || '',
           style: details.meta?.style || '',
-          finish_color: details.meta?.finish_color || '',
+          finish_color: details.meta?.finish_color || ''
         };
-        // Add card
+
         addColumn(cardData);
-        // Card is now created and being hydrated asynchronously
-        // The metadata is stored in card.dataset and will be applied when hydrateCardOptions completes
-        
+
         const cardHost = $('columnsHost');
-        const card = cardHost ? cardHost.lastChild : null;
-        if (card) {
-          // Prefill pricing and notes
-          // Find matching lines for this column
-          const lines = (modelData.lines || []).filter(l => l.column_id === col.column_id || !l.column_id);
-          // Cabinet Material Cost
-          const matLine = lines.find(l => l.category === 'Materials');
-          const matInput = card.querySelector('input[placeholder="$"]');
-          if (matInput && matLine) matInput.value = Number(matLine.unit_price || 0);
-          // Hardware
-          const hwLine = lines.find(l => l.category === 'Hardware');
-          const hwInput = card.querySelectorAll('input[placeholder="$"]')[1];
-          if (hwInput && hwLine) hwInput.value = Number(hwLine.unit_price || 0);
-          // Misc Notes
-          const notesArea = card.querySelector('textarea');
-          if (notesArea && details.notes) notesArea.value = details.notes;
-          console.log('[PREFILL] Set card pricing and notes; dropdowns will hydrate from dataset');
+        const card = cardHost ? cardHost.lastElementChild : null;
+        if (!card) return;
+
+        const byCategory = (category) =>
+          lines.find((line) =>
+            (line.column_id === col.column_id || line.column_id == null) &&
+            line.category === category
+          );
+
+        const currencyInputs = card.querySelectorAll('input[placeholder="$"]');
+        const materialLine = byCategory('Materials');
+        if (currencyInputs[0] && materialLine) currencyInputs[0].value = Number(materialLine.unit_price || 0);
+        const hardwareLine = byCategory('Hardware');
+        if (currencyInputs[1] && hardwareLine) currencyInputs[1].value = Number(hardwareLine.unit_price || 0);
+        const accessoriesLine = byCategory('Accessories');
+        if (currencyInputs[2] && accessoriesLine) currencyInputs[2].value = Number(accessoriesLine.unit_price || 0);
+        const assemblyLine = byCategory('Assembly');
+        if (currencyInputs[3] && assemblyLine) currencyInputs[3].value = Number(assemblyLine.unit_price || 0);
+        const miscLine = byCategory('Adjustments');
+        if (currencyInputs[4] && miscLine) currencyInputs[4].value = Number(miscLine.unit_price || 0);
+        const shippingLine = byCategory('Shipping');
+        if (currencyInputs[5] && shippingLine) currencyInputs[5].value = Number(shippingLine.unit_price || 0);
+
+        const notesArea = card.querySelector('textarea');
+        if (notesArea && details.notes) notesArea.value = details.notes;
+      });
+
+      // Render preview/per-card totals (optional display hooks)
+      try {
+  const previewRes = await fetch('/api/bids/' + bidId + '/preview', opts);
+        if (previewRes.ok) {
+          const previewRows = await previewRes.json();
+          if (Array.isArray(previewRows)) {
+            renderPreviewTable(previewRows);
+            renderPerCardTotals(previewRows);
+          }
         }
+      } catch (err) {
+        console.warn('preview load skipped', err);
       }
-      console.log('[PREFILL] All columns added, computing totals');
+
+      window.currentBidId = bidId;
+      togglePdfBtn();
       computeTotals();
-    } catch (e) {
-      console.error('[PREFILL] Error:', e);
+      if (hint) hint.textContent = '';
+    } catch (err) {
+      console.error('[prefillBid]', err);
+      if (hint) hint.textContent = '';
+      showNotice('Error loading bid', 'error');
     }
   }
   
