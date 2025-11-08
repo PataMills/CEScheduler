@@ -232,7 +232,7 @@ async function loadBidModel(bidId) {
   const id = Number(bidId);
   if (!Number.isFinite(id)) return null;
 
-  const [columnsQ, snapshotQ] = await Promise.all([
+  const [columnsQ, snapshotQ, linesQ] = await Promise.all([
     pool
       .query(
         `SELECT id, label, room, unit_type, color, units, sort_order
@@ -251,13 +251,28 @@ async function loadBidModel(bidId) {
         [id]
       )
       .catch(() => ({ rows: [] })),
+    pool
+      .query(
+        `SELECT id, description, qty_per_unit, unit_price, pricing_method, sort_order
+           FROM public.bid_lines
+          WHERE bid_id = $1
+          ORDER BY sort_order, id`,
+        [id]
+      )
+      .catch(() => ({ rows: [] })),
   ]);
 
   const snapshotRaw = columnsQ.rows.length || snapshotQ.rows.length ? ensurePlainObject(snapshotQ.rows[0]?.calc_snapshot) : {};
   const projectSnapshot = ensurePlainObject(snapshotRaw.projectSnapshot ?? snapshotRaw.project_snapshot ?? {});
 
   const snapshotColumns = ensureArray(snapshotRaw.columns ?? projectSnapshot.columns ?? projectSnapshot.cards ?? []);
-  const snapshotLines = ensureArray(snapshotRaw.lines ?? snapshotRaw.line_items ?? projectSnapshot.lines ?? projectSnapshot.line_items ?? []);
+  let snapshotLines = ensureArray(
+    snapshotRaw.lines ??
+      snapshotRaw.line_items ??
+      projectSnapshot.lines ??
+      projectSnapshot.line_items ??
+      []
+  );
 
   const columns = columnsQ.rows.length
     ? columnsQ.rows.map((row, idx) => ({
@@ -279,6 +294,17 @@ async function loadBidModel(bidId) {
         sort_order: toNumberOrZero(col.sort_order ?? idx),
       }));
 
+  if (!snapshotLines.length && linesQ.rows.length) {
+    snapshotLines = linesQ.rows.map((line, idx) => ({
+      line_id: Number(line.id),
+      description: safeString(line.description ?? ""),
+      qty_per_unit: toNumberOrZero(line.qty_per_unit),
+      unit_price: toNumberOrZero(line.unit_price),
+      pricing_method: safeString(line.pricing_method ?? "fixed") || "fixed",
+      sort_order: toNumberOrZero(line.sort_order ?? idx),
+    }));
+  }
+
   const lines = snapshotLines.map((line, idx) => ({
     line_id: Number.isFinite(Number(line.line_id ?? line.id)) ? Number(line.line_id ?? line.id) : idx + 1,
     description: safeString(line.description ?? line.name ?? ""),
@@ -288,8 +314,11 @@ async function loadBidModel(bidId) {
     sort_order: toNumberOrZero(line.sort_order ?? idx),
   }));
 
-  const cardsCount = columns.length || toNumberOrZero(snapshotRaw.cards_count ?? projectSnapshot.cards_count ?? projectSnapshot.cards ?? 0);
-  const unitsCount = columns.reduce((sum, col) => sum + toNumberOrZero(col.units), 0) || toNumberOrZero(snapshotRaw.units_count ?? projectSnapshot.units_count ?? projectSnapshot.units ?? 0);
+  const cardsCount =
+    columns.length || toNumberOrZero(snapshotRaw.cards_count ?? projectSnapshot.cards_count ?? projectSnapshot.cards ?? 0);
+  const unitsCount =
+    columns.reduce((sum, col) => sum + toNumberOrZero(col.units), 0) ||
+    toNumberOrZero(snapshotRaw.units_count ?? projectSnapshot.units_count ?? projectSnapshot.units ?? 0);
 
   return {
     columns,

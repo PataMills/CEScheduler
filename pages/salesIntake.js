@@ -48,6 +48,9 @@ export default function registerSalesIntake(app) {
     .kpi label{color:var(--muted);font-size:12px}
     .kpi .val{font-weight:700}
     .hr{border:none;border-top:1px solid var(--line);margin:10px 0}
+    .cardSubtotal{margin-top:12px;padding:10px 12px;background:#191d2b;border:1px solid var(--line);border-radius:12px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .cardSubtotal label{margin:0;color:var(--muted);font-size:12px}
+    .cardSubtotal .card-subtotal-text{font-weight:700;font-size:15px}
   </style>
 </head>
 <body>
@@ -364,13 +367,66 @@ function setText(selector, value) {
 }
 
 function money(value) {
-  const num = Number(value || 0);
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '$0.00';
   return num.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
 }
 
 function pct(value) {
-  const num = Number(value || 0);
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0%';
   return (num * 100).toFixed(2) + '%';
+}
+
+function setMoneyText(selector, value) {
+  const el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+  if (!el) return;
+  const num = Number(value);
+  el.textContent = Number.isFinite(num)
+    ? num.toLocaleString(undefined, { style: 'currency', currency: 'USD' })
+    : '$0.00';
+}
+
+function normalizeSummary(data) {
+  const infoRaw = data?.info ?? {};
+  const modelRaw = data?.model ?? {};
+  const totalsRaw = data?.totals ?? {};
+
+  const info = {
+    status: infoRaw.status ?? 'draft',
+    customer_name: infoRaw.customer_name ?? '',
+    customer_email: infoRaw.customer_email ?? '',
+    project_name: infoRaw.project_name ?? '',
+    builder: infoRaw.builder ?? infoRaw.builder_name ?? '',
+    home_address: infoRaw.home_address ?? '',
+    lot_plan_name: infoRaw.lot_plan_name ?? infoRaw.lot_plan ?? '',
+    sales_person: infoRaw.sales_person ?? '',
+    designer: infoRaw.designer ?? '',
+    customer_type: infoRaw.customer_type ?? '',
+    credit_card: infoRaw.credit_card ?? null,
+    tax_rate: Number(infoRaw.tax_rate ?? totalsRaw.tax_rate ?? 0),
+    deposit_pct: Number(infoRaw.deposit_pct ?? totalsRaw.deposit_pct ?? 0)
+  };
+
+  const totals = {
+    subtotal: Number(totalsRaw.subtotal ?? totalsRaw.subtotal_after ?? totalsRaw.subtotal_after_discount ?? 0),
+    subtotal_after_discount: Number(totalsRaw.subtotal_after_discount ?? totalsRaw.subtotal_after ?? totalsRaw.subtotal ?? 0),
+    tax: Number(totalsRaw.tax ?? totalsRaw.tax_amount ?? 0),
+    total: Number(totalsRaw.total ?? totalsRaw.total_amount ?? 0),
+    deposit_pct: Number(totalsRaw.deposit_pct ?? infoRaw.deposit_pct ?? 0),
+    deposit_amount: Number(totalsRaw.deposit_amount ?? totalsRaw.deposit ?? 0),
+    remaining: Number(totalsRaw.remaining ?? totalsRaw.remaining_amount ?? 0),
+    tax_rate: Number(totalsRaw.tax_rate ?? infoRaw.tax_rate ?? 0),
+    cc_fee_amount: Number(totalsRaw.cc_fee_amount ?? totalsRaw.cc_fee ?? 0),
+    cc_fee_pct: Number(totalsRaw.cc_fee_pct ?? totalsRaw.cc_fee_rate ?? 0)
+  };
+
+  const model = {
+    cards_count: Number(modelRaw.cards_count ?? modelRaw.cards ?? 0),
+    units_count: Number(modelRaw.units_count ?? modelRaw.units ?? 0)
+  };
+
+  return { info, totals, model };
 }
 
 function renderPreviewTable(rows) {
@@ -381,14 +437,33 @@ function renderPreviewTable(rows) {
 
 function renderPerCardTotals(rows) {
   if (!Array.isArray(rows)) return;
-  const sums = {};
+  const totalsMap = new Map();
   rows.forEach((row) => {
-    const key = row.column_id;
-    if (key == null) return;
-    const lineTotal = Number(row.line_total || 0);
-    sums[key] = (sums[key] || 0) + lineTotal;
+    const columnId = Number(row && row.column_id);
+    const lineTotal = Number(row && row.line_total);
+    if (!Number.isFinite(columnId)) return;
+    if (!Number.isFinite(lineTotal)) return;
+    totalsMap.set(columnId, (totalsMap.get(columnId) || 0) + lineTotal);
   });
-  console.debug('[preview] per-card totals', sums);
+
+  const fallbackTotals = Array.from(totalsMap.values());
+  const cards = Array.from(document.querySelectorAll('#columnsHost .card'));
+  cards.forEach((card, index) => {
+    const attr = card.getAttribute('data-column-id');
+    const columnId = Number(attr);
+    let subtotal = 0;
+    if (Number.isFinite(columnId) && totalsMap.has(columnId)) {
+      subtotal = totalsMap.get(columnId) || 0;
+    } else if (fallbackTotals[index] != null) {
+      subtotal = fallbackTotals[index] || 0;
+    }
+
+    const textNode = card.querySelector('.card-subtotal-text');
+    if (textNode) textNode.textContent = money(subtotal);
+
+    const inputNode = card.querySelector('.card-subtotal-input');
+    if (inputNode) inputNode.value = money(subtotal);
+  });
 }
 
 // Core save that returns the bid id. Does NOT open cards view.
@@ -488,6 +563,9 @@ async function saveDraftCore(){
     const label = cardEl.querySelector('.cardHead input:not([type="number"])')?.value || 'Column';
     const units = Number(cardEl.querySelector('.cardHead input[type="number"]')?.value || 0);
     const colRow = await createColumn(bidId, { label, units });
+    if (colRow && colRow.id != null) {
+      cardEl.dataset.columnId = String(colRow.id);
+    }
 
     // read the four dropdowns from the intake card
     const meta = {
@@ -496,13 +574,14 @@ async function saveDraftCore(){
       style:        cardEl.querySelector('.opt-door-style')?.value || '',
       finish_color: cardEl.querySelector('.opt-finish-color')?.value || ''
     };
+    const notesText = (cardEl.querySelector('textarea')?.value || '').trim();
 
     // seed per-card details so Sales Details can prefill
     try {
       const r = await fetch('/api/bids/' + bidId + '/columns-details/' + colRow.id, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meta }) // hardware/notes added later by rep
+        body: JSON.stringify({ meta, notes: notesText }) // hardware/notes added later by rep
       });
       if (!r.ok) {
         const t = await r.text().catch(()=> '');
@@ -513,7 +592,8 @@ async function saveDraftCore(){
     }
 
     // now create the pricing lines for this card (unchanged)
-    const items = cols.find(c => c.label === label && c.units === units)?.items || [];
+    const columnSnap = cols.find(c => (c.column_id && colRow && c.column_id === colRow.id) || (c.label === label && c.units === units)) || {};
+    const items = Array.isArray(columnSnap.items) ? columnSnap.items : [];
     for (const item of items) await createLine(bidId, item);
   }
 
@@ -525,37 +605,16 @@ async function saveDraftCore(){
     console.warn('columns snapshot failed:', e);
   }
 
-  // 4) persist the GRAND TOTAL snapshot exactly as displayed
-  function readMoneyText(id){
-    const t = document.getElementById(id)?.textContent || '0';
-    return Number(t.replace(/[^0-9.\-]/g, '')) || 0;
-  }
-
-  const snap = {
-    subtotal_after_discount: readMoneyText('sb_subtotal_disc'),
-    tax_rate:                (readTopForm().taxPct || 0) / 100,
-    tax_amount:              readMoneyText('sb_tax_amt'),
-    total:                   readMoneyText('sb_total'),
-    deposit_pct:             (readTopForm().depositPct || 0) / 100,
-    deposit_amount:          readMoneyText('sb_dep_amt'),
-    remaining_amount:        readMoneyText('sb_rem_amt'),
-    cc_fee_pct:              (readTopForm().creditCard ? 0.03 : 0),
-    cc_fee:                  Math.max(0, readMoneyText('sb_total') -
-                                        (readMoneyText('sb_subtotal_disc') + readMoneyText('sb_tax_amt')))
-  };
-
-  const resp = await fetch('/api/bids/' + bidId + '/totals', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(snap)
-  });
-
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => '(no body)');
-    console.error('SAVE TOTALS FAIL', resp.status, txt);
-    alert('Save totals failed: ' + txt);
-  } else {
-    await resp.json().catch(() => ({}));
+  // 4) persist the grand totals + working model snapshot so the bid rehydrates
+  computeTotals();
+  const latestTop = readTopForm();
+  const totalsSnapshot = buildTotalsSnapshot(latestTop);
+  const modelSnapshot = buildModelSnapshot(cols);
+  try {
+    await persistBidComputedState(bidId, { totals: totalsSnapshot, model: modelSnapshot });
+  } catch (err) {
+    console.error('Persist computed state failed', err);
+    alert(err.message || 'Save totals failed');
   }
 
   // 5) optional: refresh & finish
@@ -674,6 +733,12 @@ function makeColumnCard(data){
   var card = el('div'); card.className = 'card';
   var head = el('div'); head.className = 'cardHead';
 
+  var columnIdRaw = data && (data.column_id ?? data.columnId);
+  var columnIdNum = Number(columnIdRaw);
+  if (Number.isFinite(columnIdNum)) {
+    card.dataset.columnId = String(columnIdNum);
+  }
+
   var titleInput = el('input');
   titleInput.value = (data&&data.label) || ('Room / Unit ' + (colSeq++));
   titleInput.placeholder = 'Column Label (e.g., Kitchen)';
@@ -723,6 +788,10 @@ row4.innerHTML =
     '<div><label>Misc Notes</label><textarea placeholder="Notes…"></textarea></div>';
 card.appendChild(row4);
 
+  var subtotalBox = el('div'); subtotalBox.className = 'cardSubtotal';
+  subtotalBox.innerHTML = '<label>Card Subtotal</label><div class="card-subtotal-text">$ 0.00</div>';
+  card.appendChild(subtotalBox);
+
   // Store metadata on the card element so hydrateCardOptions can use it
   if (data) {
     card.dataset.manufacturer = data.manufacturer || '';
@@ -740,7 +809,12 @@ card.appendChild(row4);
 
 function addColumn(data){
   var host = ensureColumnsHost();
-  host.appendChild(makeColumnCard(data));
+  var card = makeColumnCard(data);
+  host.appendChild(card);
+  if (data && (data.column_id != null || data.columnId != null)) {
+    var cid = Number(data.column_id ?? data.columnId);
+    if (Number.isFinite(cid)) card.dataset.columnId = String(cid);
+  }
   computeTotals();
 }
 
@@ -792,6 +866,8 @@ function readColumnsForSave(){
   Array.from(host.querySelectorAll('.card')).forEach(function(card){
     var label=card.querySelector('.cardHead input:not([type="number"])')?.value||card.querySelector('.cardHead input')?.value||'Column';
     var units=num(card.querySelector('.cardHead input[type="number"]')?.value||0);
+    var columnIdAttr = card.getAttribute('data-column-id');
+    var columnId = Number(columnIdAttr);
 
     var findAmt=function(needle){
       var lab=Array.from(card.querySelectorAll('label')).find(function(l){return (l.textContent||'').toLowerCase().indexOf(needle)>-1;});
@@ -810,7 +886,7 @@ function readColumnsForSave(){
     const spc = card.querySelector('.opt-species')?.value || '';
     const sty = card.querySelector('.opt-door-style')?.value || '';
     const col = card.querySelector('.opt-finish-color')?.value || '';
-    const metaText = ['Mfg: '+man, 'Species: '+spc, 'Style: '+sty, 'Color: '+col].join(' | ');
+  const metaText = ['Mfg: '+man, 'Species: '+spc, 'Style: '+sty, 'Color: '+col].join(' | ');
     items.push({
     description: metaText,
     category: 'Notes',
@@ -837,7 +913,9 @@ function readColumnsForSave(){
     var safetyPU=basePU*(safetyPct/100);
     if(safetyPU>0){ items.push({description:'Safety ('+safetyPct+'%)',category:'Safety',unit_of_measure:'ea',qty_per_unit:1,unit_price:safetyPU,pricing_method:'fixed',sort_order:1000}); }
 
-    out.push({label:label, units:units, items:items});
+    const meta = { manufacturer: man, species: spc, style: sty, finish_color: col };
+    const notes = (card.querySelector('textarea')?.value || '').trim();
+    out.push({ column_id: Number.isFinite(columnId) ? columnId : null, label: label, units: units, items: items, meta: meta, notes: notes });
   });
   return out;
 }
@@ -956,6 +1034,151 @@ function computeTotals(){
   putText('sb_goal', '$ '+fmt2(goal));   // show computed goal
   putText('sb_diff', '$ '+fmt2(diff));
   putText('sb_throughput', fmt2(throughputPct) + '%');
+}
+
+function buildTotalsSnapshot(topForm) {
+  const top = topForm || readTopForm();
+  const readMoney = (selector) => {
+    const text = document.querySelector(selector)?.textContent || '0';
+    const normalized = text.replace(/[^0-9.\-]/g, '');
+    const value = Number(normalized);
+    return Number.isFinite(value) ? value : 0;
+  };
+
+  const subtotalRaw = readMoney('#sb_subtotal');
+  const subtotalDiscounted = readMoney('#sb_subtotal_disc');
+  const taxAmount = readMoney('#sb_tax_amt');
+  const totalWithCc = readMoney('#sb_total');
+  const depositAmount = readMoney('#sb_dep_amt');
+  const remainingAmount = readMoney('#sb_rem_amt');
+  const ccFeeAmount = readMoney('#sb_cc_amt');
+
+  const taxRate = Number(top?.taxPct ?? 0) / 100;
+  const depositPct = Number(top?.depositPct ?? 0) / 100;
+  const ccFeePct = top?.creditCard ? 0.03 : 0;
+
+  return {
+    subtotal: subtotalRaw,
+    subtotal_after_discount: subtotalDiscounted,
+    subtotal_after: subtotalDiscounted,
+    tax: taxAmount,
+    tax_rate: taxRate,
+    total: totalWithCc,
+    deposit_pct: depositPct,
+    deposit_amount: depositAmount,
+    remaining: remainingAmount,
+    cc_fee_pct: ccFeePct,
+    cc_fee_amount: ccFeeAmount
+  };
+}
+
+function buildModelSnapshot(columnsForSave) {
+  const source = Array.isArray(columnsForSave) && columnsForSave.length ? columnsForSave : readColumnsForSave();
+  let lineSeq = 1;
+  let unitsCount = 0;
+
+  const columns = source.map((col, idx) => {
+    const units = num(col?.units ?? 0);
+    unitsCount += units;
+    const meta = col?.meta || {};
+    const rawLabel = col && col.label ? String(col.label) : '';
+    const label = rawLabel.trim() || ('Card ' + (idx + 1));
+    const columnIdCandidate = Number(col && col.column_id);
+    const columnId = Number.isFinite(columnIdCandidate) ? columnIdCandidate : idx + 1;
+    return {
+      column_id: columnId,
+      column_label: label,
+      units,
+      manufacturer: meta.manufacturer || '',
+      species: meta.species || '',
+      style: meta.style || '',
+      finish_color: meta.finish_color || '',
+      notes: col?.notes || ''
+    };
+  });
+
+  const lines = [];
+  source.forEach((col, idx) => {
+    const columnIdCandidate = Number(col && col.column_id);
+    const columnId = Number.isFinite(columnIdCandidate) ? columnIdCandidate : (idx + 1);
+    const items = Array.isArray(col?.items) ? col.items : [];
+    items.forEach((item, itemIdx) => {
+      lines.push({
+        line_id: lineSeq++,
+        column_id: columnId,
+        description: item?.description ?? '',
+        qty_per_unit: num(item?.qty_per_unit ?? 0),
+        unit_price: num(item?.unit_price ?? 0),
+        pricing_method: item?.pricing_method ?? 'fixed',
+        sort_order: Number.isFinite(Number(item?.sort_order)) ? Number(item?.sort_order) : itemIdx,
+        category: item?.category ?? null
+      });
+    });
+  });
+
+  return {
+    columns,
+    lines,
+    cards_count: columns.length,
+    units_count: unitsCount
+  };
+}
+
+async function persistBidComputedState(bidId, snapshots) {
+  if (!Number.isFinite(Number(bidId))) {
+    throw new Error('Invalid bid id');
+  }
+  const { totals, model } = snapshots || {};
+  const headers = { 'Content-Type': 'application/json', 'X-Org-Id': '1' };
+
+  if (totals) {
+    const body = {
+      subtotal_after_discount: num(totals.subtotal_after_discount ?? totals.subtotal ?? 0),
+      subtotal_after: num(totals.subtotal_after ?? totals.subtotal_after_discount ?? totals.subtotal ?? 0),
+      tax_rate: num(totals.tax_rate ?? 0),
+      tax_amount: num(totals.tax ?? 0),
+      cc_fee_pct: num(totals.cc_fee_pct ?? 0),
+      cc_fee_amount: num(totals.cc_fee_amount ?? totals.cc_fee ?? 0),
+      cc_fee: num(totals.cc_fee_amount ?? totals.cc_fee ?? 0),
+      total: num(totals.total ?? 0),
+      deposit_pct: num(totals.deposit_pct ?? 0),
+      deposit_amount: num(totals.deposit_amount ?? 0),
+      remaining_amount: num(totals.remaining ?? totals.remaining_amount ?? 0)
+    };
+
+    const resp = await fetch('/api/bids/' + bidId + '/totals', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      const message = ('Save totals failed (HTTP ' + resp.status + '): ' + text).trim();
+      throw new Error(message);
+    }
+    await resp.json().catch(() => ({}));
+  }
+
+  if (model) {
+    const snapshot = {
+      columns: Array.isArray(model.columns) ? model.columns : [],
+      lines: Array.isArray(model.lines) ? model.lines : [],
+      cards_count: num(model.cards_count ?? (model.columns ? model.columns.length : 0)),
+      units_count: num(model.units_count ?? 0)
+    };
+
+    const resp = await fetch('/api/bids/' + bidId + '/details', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ calc_snapshot: snapshot })
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      const message = ('Save snapshot failed (HTTP ' + resp.status + '): ' + text).trim();
+      throw new Error(message);
+    }
+    await resp.json().catch(() => ({}));
+  }
 }
 
 function autoWireTotals(){
@@ -1138,50 +1361,65 @@ document.addEventListener('DOMContentLoaded', async function(){
         return;
       }
 
-      const summary = await summaryRes.json();
-      if (!summary?.ok) {
+      const summaryRaw = await summaryRes.json();
+      if (!summaryRaw?.ok) {
         showNotice('Bid not found', 'error');
         if (hint) hint.textContent = '';
         return;
       }
 
-      const info = summary.info || {};
-      const totals = summary.totals || {};
-      const modelSummary = summary.model || {};
+      const { info, totals, model: modelSummary } = normalizeSummary(summaryRaw);
+      const infoRaw = summaryRaw.info || {};
 
-      setInputValue('sales_person', info.sales_person || '');
-      setInputValue('builder_name', info.builder || '');
-      setInputValue('home_address', info.home_address || '');
-      setInputValue('lot_plan', info.lot_plan_name || '');
-      setInputValue('customer_email', info.customer_email || '');
-      setInputValue('homeowner', info.customer_name || '');
+      setInputValue('sales_person', info.sales_person || infoRaw.sales_person || '');
+      setInputValue('builder_name', info.builder || infoRaw.builder || '');
+      setInputValue('home_address', info.home_address || infoRaw.home_address || '');
+      setInputValue('lot_plan', info.lot_plan_name || infoRaw.lot_plan_name || infoRaw.lot_plan || '');
+      setInputValue('customer_email', info.customer_email || infoRaw.customer_email || '');
+      setInputValue('homeowner', info.customer_name || infoRaw.customer_name || '');
 
       // Sidebar snapshot
-      putText('sb_units', (modelSummary.units_count ?? 0).toLocaleString());
-      const subtotalValue = totals.subtotal ?? totals.subtotal_after ?? totals.subtotal_after_discount ?? 0;
-      const taxValue = totals.tax ?? totals.tax_amount ?? 0;
-      const totalValue = totals.total ?? totals.total_amount ?? 0;
-      const remainingValue = totals.remaining ?? totals.remaining_amount ?? 0;
-      const ccFeeValue = totals.cc_fee_amount ?? totals.cc_fee ?? 0;
+  setText('#sb_units', Number(modelSummary.units_count || 0).toLocaleString());
+  setMoneyText('#sb_subtotal', totals.subtotal);
+  setMoneyText('#sb_subtotal_disc', totals.subtotal_after_discount);
+  setText('#sb_tax_pct', pct(totals.tax_rate || info.tax_rate));
+  setMoneyText('#sb_tax_amt', totals.tax);
+  setMoneyText('#sb_total', totals.total);
+  setMoneyText('#sb_rem_amt', totals.remaining);
+  setMoneyText('#sb_cc_amt', totals.cc_fee_amount);
+  setMoneyText('#subtotal', totals.subtotal);
+  setMoneyText('#tax', totals.tax);
+  setMoneyText('#total', totals.total);
+  setText('#depositPct', pct(totals.deposit_pct));
+  setMoneyText('#depositAmount', totals.deposit_amount);
+  setMoneyText('#remaining', totals.remaining);
 
-      putText('sb_subtotal', money(subtotalValue));
-      putText('sb_subtotal_disc', money(subtotalValue));
-      putText('sb_tax_pct', pct(totals.tax_rate ?? info.tax_rate ?? 0));
-      putText('sb_tax_amt', money(taxValue));
-      putText('sb_total', money(totalValue));
-      putText('sb_rem_amt', money(remainingValue));
-  putText('sb_dep_pct', '0.00%');
-  putText('sb_dep_amt', money(0));
-      putText('sb_cc_amt', money(ccFeeValue));
-  putText('sb_cc', 'No');
-  putText('sb_cc_pct', '0.00%');
+      const creditCardFlag = (() => {
+        const raw = infoRaw.credit_card;
+        if (raw === null || raw === undefined) {
+          return Boolean(totals.cc_fee_pct && totals.cc_fee_pct > 0);
+        }
+        if (typeof raw === 'string') {
+          const lower = raw.trim().toLowerCase();
+          return lower === 'true' || lower === '1' || lower === 'yes';
+        }
+        return Boolean(raw);
+      })();
 
-      const applyDepositFraction = (raw) => {
-        if (raw == null) return;
-        const fraction = raw > 1 ? raw / 100 : raw;
+      setText('#sb_cc', creditCardFlag ? 'Yes' : 'No');
+      setText('#sb_cc_pct', pct(creditCardFlag ? (totals.cc_fee_pct || 0.03) : 0));
+
+      const totalValue = totals.total;
+      const depositAmountFromTotals = totals.deposit_amount;
+      const applyDepositFraction = (rawValue) => {
+        if (rawValue == null) return false;
+        const fraction = rawValue > 1 ? rawValue / 100 : rawValue;
+        if (!Number.isFinite(fraction)) return false;
         const percent = fraction * 100;
+
         const depHidden = $('deposit_pct');
         if (depHidden) depHidden.value = String(Math.round(percent));
+
         const depSelect = $('deposit_pct_select');
         if (depSelect) {
           let matched = false;
@@ -1201,12 +1439,30 @@ document.addEventListener('DOMContentLoaded', async function(){
             depSelect.value = opt.value;
           }
         }
-        const depositValue = totals.deposit_amount != null ? totals.deposit_amount : totalValue * fraction;
-        putText('sb_dep_pct', percent.toFixed(2) + '%');
-        putText('sb_dep_amt', money(depositValue));
+
+        setText('#sb_dep_pct', percent.toFixed(2) + '%');
+        const depositValue = Number.isFinite(depositAmountFromTotals) && depositAmountFromTotals > 0
+          ? depositAmountFromTotals
+          : totalValue * fraction;
+        setMoneyText('#sb_dep_amt', depositValue);
+        setText('#depositPct', percent.toFixed(2) + '%');
+        setMoneyText('#depositAmount', depositValue);
+        return true;
       };
 
-      applyDepositFraction(totals.deposit_pct ?? info.deposit_pct ?? null);
+      let depositHandled = false;
+      if (totals.deposit_pct != null) {
+        depositHandled = applyDepositFraction(totals.deposit_pct);
+      }
+      if (!depositHandled && info.deposit_pct != null) {
+        depositHandled = applyDepositFraction(info.deposit_pct);
+      }
+      if (!depositHandled) {
+        setText('#sb_dep_pct', '0.00%');
+        setMoneyText('#sb_dep_amt', 0);
+        setText('#depositPct', '0%');
+        setMoneyText('#depositAmount', 0);
+      }
 
       // Merge onboarding fields for form inputs
       let onboarding = {};
@@ -1291,6 +1547,7 @@ document.addEventListener('DOMContentLoaded', async function(){
       columns.forEach((col) => {
         const details = columnDetails[col.column_id] || {};
         const cardData = {
+          column_id: col.column_id,
           label: col.column_label,
           units: col.units,
           manufacturer: details.meta?.manufacturer || '',
