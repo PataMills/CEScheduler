@@ -1,18 +1,32 @@
 import { Router } from "express";
-import cookieParser from "cookie-parser";
 import pool from "../db.js";
 import { requireAuth } from "./auth.js";
 
 const router = Router();
 const allow = (_req, _res, next) => next(); // TODO: swap to your real auth guard
 
-router.use(cookieParser());
-
 function requireAdminOrPurchasing(req, res, next) {
   const role = req.user?.role;
   if (role === "admin" || role === "purchasing") return next();
   return res.status(403).json({ error: "forbidden" });
 }
+
+router.get("/recent", requireAuth, async (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 10));
+  const sql = `
+    SELECT id, name, builder_id, total, status, updated_at
+      FROM public.bids
+     ORDER BY updated_at DESC NULLS LAST, id DESC
+     LIMIT $1;
+  `;
+  try {
+    const { rows } = await pool.query(sql, [limit]);
+    res.json({ ok: true, bids: rows });
+  } catch (e) {
+    console.error("[/api/bids/recent]", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
 
 // Basic columns for a bid
 router.get("/:id/columns", allow, async (req, res) => {

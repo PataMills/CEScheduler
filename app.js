@@ -34,7 +34,6 @@ import adminRouter from "./routes/admin.js";
 import registerAdminUsersPage from "./pages/adminUsers.js";
 import registerSalesHomePage from "./pages/salesHome.js";
 import searchRouter from "./routes/search.js";
-import bidsRecentRouter from "./routes/bidsRecent.js";
 import registerCalendarPage from "./pages/calendar.js";
 import calendarApiRouter from "./routes/calendarApi.js";
 import rescheduleRouter from "./routes/reschedule.js";
@@ -77,10 +76,10 @@ import { pool, query } from "./db.js";
 // --- init app FIRST ---
 const app = express();
 app.use(express.json({ limit: "35mb" }));
+app.use(cookieParser());
 
 // --- core Sales/API routers ---
 app.use("/api/bids", bidsRouter);
-app.use("/api/bids", bidsRecentRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/availability", availabilityRouter);
 app.use("/api/options", optionsRouter);
@@ -144,7 +143,6 @@ app.use((req, res, next) => {
 });
 app.use(express.static("public"));
 app.use("/static", express.static(path.join(process.cwd(), "static")));
-app.use(cookieParser());
 app.use(["/sales-intake", "/sales-quote", "/admin-options", "/admin/options", "/admin/data"], requireAuthPage);
 // Removed redundant adminUsersRouter mounting at /api/admin/users
 app.use("/admin/users", requireAuthPage);
