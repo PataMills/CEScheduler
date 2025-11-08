@@ -1,9 +1,19 @@
 import { Router } from "express";
+import fs from "node:fs";
+import path from "node:path";
+import archiver from "archiver";
 import pool from "../db.js";
 import { requireAuth } from "./auth.js";
+import { saveDataUrlToFile } from "../app.js";
 
 const router = Router();
 const allow = (_req, _res, next) => next(); // TODO: swap to your real auth guard
+
+const BID_UPLOAD_ROOT = path.join(process.cwd(), "uploads", "bid-docs");
+fs.mkdirSync(BID_UPLOAD_ROOT, { recursive: true });
+
+const tablePresenceCache = new Map();
+const tableColumnsCache = new Map();
 
 router.get("/__ping", (_req, res) => {
   res.json({ ok: true, from: "routes/bids.js" });
@@ -46,6 +56,286 @@ function toNumberOrNull(value) {
 function toNumberOrZero(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+}
+
+async function tableExists(tableName) {
+  const key = String(tableName || "").toLowerCase();
+  if (!key) return false;
+  if (tablePresenceCache.has(key)) {
+    return tablePresenceCache.get(key);
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1
+         FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = $1
+        LIMIT 1`,
+      [key]
+    );
+    const exists = rows.length > 0;
+    tablePresenceCache.set(key, exists);
+    return exists;
+  } catch (e) {
+    console.warn(`[schema check] table ${tableName} lookup failed:`, e?.message);
+    tablePresenceCache.set(key, false);
+    return false;
+  }
+}
+
+async function getTableColumns(tableName) {
+  const key = String(tableName || "").toLowerCase();
+  if (!key) return [];
+  if (tableColumnsCache.has(key)) {
+    return tableColumnsCache.get(key);
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1`,
+      [key]
+    );
+    const cols = rows.map((r) => r.column_name);
+    tableColumnsCache.set(key, cols);
+    return cols;
+  } catch (e) {
+    console.warn(`[schema check] columns for ${tableName} failed:`, e?.message);
+    tableColumnsCache.set(key, []);
+    return [];
+  }
+}
+
+async function tableHasColumn(tableName, columnName) {
+  const cols = await getTableColumns(tableName);
+  return cols.includes(String(columnName || ""));
+}
+
+function safeString(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function safeFileName(name, fallback = "document") {
+  const base = safeString(name, fallback)
+    .trim()
+    .replace(/[\s]+/g, "_")
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+  return base || fallback;
+}
+
+function normalizeDoc(raw, bidId, source, idx = 0) {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    const label = raw.split("/").pop() || `doc-${idx + 1}`;
+    return {
+      id: null,
+      bid_id: bidId,
+      kind: null,
+      name: label,
+      url: raw,
+      column_id: null,
+      uploaded_at: null,
+      source,
+    };
+  }
+
+  if (typeof raw !== "object") return null;
+
+  const url = safeString(raw.url ?? raw.href ?? raw.link ?? raw.file_path ?? raw.path ?? "");
+  if (!url) return null;
+  const name = safeString(raw.name ?? raw.file_name ?? raw.filename ?? raw.title ?? url.split("/").pop(), `doc-${idx + 1}`);
+  const columnIdRaw = raw.column_id ?? raw.columnId;
+  const columnId = Number.isFinite(Number(columnIdRaw)) ? Number(columnIdRaw) : null;
+  return {
+    id: Number.isFinite(Number(raw.id)) ? Number(raw.id) : null,
+    bid_id: bidId,
+    kind: safeString(raw.kind ?? raw.type ?? null, null),
+    name,
+    url,
+    column_id: columnId,
+    uploaded_at: raw.uploaded_at ?? raw.created_at ?? raw.date ?? null,
+    source,
+  };
+}
+
+function matchesDocUrl(entry, targetUrl) {
+  if (!targetUrl) return false;
+  if (!entry) return false;
+  if (typeof entry === "string") {
+    return entry === targetUrl;
+  }
+  if (typeof entry === "object") {
+    const candidate = entry.url ?? entry.href ?? entry.link ?? "";
+    return candidate === targetUrl;
+  }
+  return false;
+}
+
+function buildPublicUploadPath(absPath) {
+  const relative = path.relative(path.join(process.cwd(), "uploads"), absPath);
+  const normalized = relative.split(path.sep).join("/");
+  return `/uploads/${normalized}`.replace(/\/+/g, "/");
+}
+
+function tryRemoveLocalFile(url) {
+  if (!url) return;
+  const cleanUrl = url.split("?")[0];
+  if (!cleanUrl.startsWith("/")) return;
+  const abs = path.join(process.cwd(), cleanUrl.replace(/^\/+/, ""));
+  fs.unlink(abs, (err) => {
+    if (err && err.code !== "ENOENT") {
+      console.warn("[doc delete] failed to remove", abs, err.message);
+    }
+  });
+}
+
+async function loadBidModel(bidId) {
+  const id = Number(bidId);
+  if (!Number.isFinite(id)) return null;
+
+  const [columnsQ, snapshotQ] = await Promise.all([
+    pool
+      .query(
+        `SELECT id, label, room, unit_type, color, units, sort_order
+           FROM public.bid_columns
+          WHERE bid_id = $1
+          ORDER BY sort_order, id`,
+        [id]
+      )
+      .catch(() => ({ rows: [] })),
+    pool
+      .query(
+        `SELECT calc_snapshot
+           FROM public.bids
+          WHERE id = $1
+          LIMIT 1`,
+        [id]
+      )
+      .catch(() => ({ rows: [] })),
+  ]);
+
+  const snapshotRaw = columnsQ.rows.length || snapshotQ.rows.length ? ensurePlainObject(snapshotQ.rows[0]?.calc_snapshot) : {};
+  const projectSnapshot = ensurePlainObject(snapshotRaw.projectSnapshot ?? snapshotRaw.project_snapshot ?? {});
+
+  const snapshotColumns = ensureArray(snapshotRaw.columns ?? projectSnapshot.columns ?? projectSnapshot.cards ?? []);
+  const snapshotLines = ensureArray(snapshotRaw.lines ?? snapshotRaw.line_items ?? projectSnapshot.lines ?? projectSnapshot.line_items ?? []);
+
+  const columns = columnsQ.rows.length
+    ? columnsQ.rows.map((row, idx) => ({
+        column_id: Number(row.id),
+        column_label: row.label ?? `Card ${idx + 1}`,
+        room: row.room ?? null,
+        unit_type: row.unit_type ?? null,
+        color: row.color ?? null,
+        units: toNumberOrZero(row.units),
+        sort_order: toNumberOrZero(row.sort_order ?? idx),
+      }))
+    : snapshotColumns.map((col, idx) => ({
+        column_id: Number.isFinite(Number(col.column_id ?? col.id)) ? Number(col.column_id ?? col.id) : idx + 1,
+        column_label: col.column_label ?? col.label ?? col.room ?? `Card ${idx + 1}`,
+        room: col.room ?? null,
+        unit_type: col.unit_type ?? col.type ?? null,
+        color: col.color ?? col.finish_color ?? null,
+        units: toNumberOrZero(col.units ?? col.unit_count ?? col.qty ?? 0),
+        sort_order: toNumberOrZero(col.sort_order ?? idx),
+      }));
+
+  const lines = snapshotLines.map((line, idx) => ({
+    line_id: Number.isFinite(Number(line.line_id ?? line.id)) ? Number(line.line_id ?? line.id) : idx + 1,
+    description: safeString(line.description ?? line.name ?? ""),
+    qty_per_unit: toNumberOrZero(line.qty_per_unit ?? line.qty ?? line.quantity ?? 0),
+    unit_price: toNumberOrZero(line.unit_price ?? line.price ?? 0),
+    pricing_method: safeString(line.pricing_method ?? line.method ?? "fixed") || "fixed",
+    sort_order: toNumberOrZero(line.sort_order ?? idx),
+  }));
+
+  const cardsCount = columns.length || toNumberOrZero(snapshotRaw.cards_count ?? projectSnapshot.cards_count ?? projectSnapshot.cards ?? 0);
+  const unitsCount = columns.reduce((sum, col) => sum + toNumberOrZero(col.units), 0) || toNumberOrZero(snapshotRaw.units_count ?? projectSnapshot.units_count ?? projectSnapshot.units ?? 0);
+
+  return {
+    columns,
+    lines,
+    cards_count: cardsCount,
+    units_count: unitsCount,
+    projectSnapshot,
+    snapshot: snapshotRaw,
+  };
+}
+
+async function gatherBidDocuments(bidId) {
+  const id = Number(bidId);
+  if (!Number.isFinite(id)) return [];
+
+  if (!(await tableExists("bid_documents"))) {
+    // fallback to legacy doc_links only
+    try {
+      const { rows } = await pool.query(`SELECT doc_links FROM public.bids WHERE id = $1`, [id]);
+      return ensureArray(rows[0]?.doc_links).map((entry, idx) => normalizeDoc(entry, id, "doc_links", idx)).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  const hasColumnId = await tableHasColumn("bid_documents", "column_id");
+  const hasUrl = await tableHasColumn("bid_documents", "url");
+  const hasFilePath = await tableHasColumn("bid_documents", "file_path");
+  const hasFileName = await tableHasColumn("bid_documents", "file_name");
+
+  const urlExpr = hasUrl && hasFilePath ? "COALESCE(url, file_path) AS url" : hasUrl ? "url" : hasFilePath ? "file_path AS url" : "NULL::text AS url";
+  const nameExpr = hasFileName ? "COALESCE(name, file_name) AS name" : "name";
+  const columnExpr = hasColumnId ? "column_id" : "NULL::int AS column_id";
+
+  const docsQ = await pool
+    .query(
+      `SELECT id, bid_id, kind, ${nameExpr}, ${urlExpr}, ${columnExpr}, uploaded_at
+         FROM public.bid_documents
+        WHERE bid_id = $1
+        ORDER BY uploaded_at DESC NULLS LAST, id DESC`,
+      [id]
+    )
+    .catch(() => ({ rows: [] }));
+
+  const docs = docsQ.rows.map((row, idx) => normalizeDoc(row, id, "bid_documents", idx)).filter(Boolean);
+
+  let legacy = [];
+  try {
+    const { rows } = await pool.query(`SELECT doc_links FROM public.bids WHERE id = $1`, [id]);
+    legacy = ensureArray(rows[0]?.doc_links).map((entry, idx) => normalizeDoc(entry, id, "doc_links", idx)).filter(Boolean);
+  } catch {
+    legacy = [];
+  }
+
+  return [...docs, ...legacy];
+}
+
+async function appendDocToArchive(archive, doc) {
+  if (!doc || !doc.url) return false;
+  const cleanUrl = doc.url.split("?")[0];
+  const safeName = safeFileName(doc.name || cleanUrl.split("/").pop() || `doc-${doc.id || Date.now()}`);
+
+  if (cleanUrl.startsWith("/")) {
+    const abs = path.join(process.cwd(), cleanUrl.replace(/^\/+/, ""));
+    if (fs.existsSync(abs)) {
+      archive.file(abs, { name: safeName });
+      return true;
+    }
+  }
+
+  if (cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) {
+    try {
+      const resp = await fetch(cleanUrl);
+      if (!resp.ok) return false;
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      archive.append(buffer, { name: safeName });
+      return true;
+    } catch (e) {
+      console.warn("[docs-zip] remote fetch failed", cleanUrl, e?.message);
+      return false;
+    }
+  }
+
+  return false;
 }
 
 function mapTotalsRow(row, source) {
@@ -213,20 +503,394 @@ router.get("/:id/columns-details", allow, async (req, res) => {
   }
 });
 
+router.patch("/:id/columns-details/:columnId", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  const columnId = Number(req.params.columnId);
+  if (!Number.isFinite(bidId) || !Number.isFinite(columnId)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+
+  if (!(await tableExists("bid_column_details"))) {
+    return res.status(500).json({ error: "table_missing" });
+  }
+
+  const columns = await getTableColumns("bid_column_details");
+  if (!columns.length) {
+    return res.status(500).json({ error: "table_missing" });
+  }
+
+  const body = req.body || {};
+  const meta = ensurePlainObject(body.meta);
+  const hardware = ensureArray(body.hardware);
+  const notesRaw = body.notes;
+  const notes = notesRaw === undefined || notesRaw === null ? null : String(notesRaw);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM public.bid_column_details WHERE bid_id = $1 AND column_id = $2`, [bidId, columnId]);
+
+    const insertColumns = ["bid_id", "column_id"];
+    const placeholders = ["$1", "$2"];
+    const params = [bidId, columnId];
+
+    function pushParam(value, cast) {
+      params.push(value);
+      const placeholder = `$${params.length}`;
+      return cast ? `${placeholder}${cast}` : placeholder;
+    }
+
+    if (columns.includes("meta")) {
+      insertColumns.push("meta");
+      placeholders.push(pushParam(JSON.stringify(meta), "::jsonb"));
+    }
+
+    if (columns.includes("hardware")) {
+      insertColumns.push("hardware");
+      placeholders.push(pushParam(JSON.stringify(hardware), "::jsonb"));
+    }
+
+    if (columns.includes("notes")) {
+      insertColumns.push("notes");
+      placeholders.push(pushParam(notes, ""));
+    }
+
+    if (columns.includes("updated_at")) {
+      insertColumns.push("updated_at");
+      placeholders.push("now()");
+    }
+
+    if (columns.includes("created_at")) {
+      insertColumns.push("created_at");
+      placeholders.push("now()");
+    }
+
+    const returningCols = ["bid_id", "column_id"]; 
+    if (columns.includes("meta")) returningCols.push("meta");
+    if (columns.includes("hardware")) returningCols.push("hardware");
+    if (columns.includes("notes")) returningCols.push("notes");
+    if (columns.includes("updated_at")) returningCols.push("updated_at");
+
+    const sql = `INSERT INTO public.bid_column_details (${insertColumns.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING ${returningCols.join(", ")}`;
+    const { rows } = await client.query(sql, params);
+    await client.query("COMMIT");
+    const result = rows[0] ?? { bid_id: bidId, column_id: columnId, meta, hardware, notes };
+    res.json(result);
+  } catch (e) {
+    await client.query("ROLLBACK");
+    console.error("[/api/bids/:id/columns-details/:columnId]", e);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
 // Bid-level documents for Review page
 router.get("/:id/documents", allow, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
   try {
-    const { rows } = await pool.query(
-      `SELECT id, bid_id, kind, name, url, uploaded_at
-         FROM public.bid_documents
-        WHERE bid_id = $1
-        ORDER BY uploaded_at DESC, id DESC`,
-      [req.params.id]
-    );
-    res.json(rows);
+    if (!(await tableExists("bid_documents"))) {
+      return res.json([]);
+    }
+    const docs = await gatherBidDocuments(bidId);
+    const filtered = docs.filter((doc) => doc && doc.source === "bid_documents");
+    res.json(filtered);
   } catch (e) {
     console.error("[/api/bids/:id/documents]", e);
     res.status(500).json({ error: "server_error" });
+  }
+});
+
+router.get("/:id/files", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    const { rows } = await pool.query(`SELECT doc_links FROM public.bids WHERE id = $1`, [bidId]);
+    if (!rows.length) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    const docs = ensureArray(rows[0]?.doc_links)
+      .map((entry, idx) => normalizeDoc(entry, bidId, "doc_links", idx))
+      .filter(Boolean);
+    res.json(docs);
+  } catch (e) {
+    console.error("[/api/bids/:id/files]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+router.post("/:id/docs/upload-dataurl", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  const body = req.body || {};
+  const dataUrl = safeString(body.dataUrl ?? body.data_url ?? "");
+  if (!dataUrl) {
+    return res.status(400).json({ error: "missing_data_url" });
+  }
+  const kind = safeString(body.kind ?? "other") || "other";
+  const requestedName = safeString(body.name ?? body.filename ?? "");
+  const columnIdRaw = body.column_id ?? body.columnId;
+  const columnId = Number.isFinite(Number(columnIdRaw)) ? Number(columnIdRaw) : null;
+  const mimeMatch = /^data:([^;]+);/i.exec(dataUrl);
+  const mimeType = mimeMatch ? mimeMatch[1] : null;
+
+  const destDir = path.join(BID_UPLOAD_ROOT, String(bidId));
+  const baseName = safeFileName(requestedName || `${kind}-${Date.now()}`).replace(/\.[^.]+$/, "");
+  const saved = saveDataUrlToFile(dataUrl, destDir, `${Date.now()}_${baseName}`);
+  if (!saved) {
+    return res.status(400).json({ error: "bad_data_url" });
+  }
+
+  const absPath = saved.abs;
+  const publicUrl = buildPublicUploadPath(absPath);
+  let fileSize = 0;
+  try {
+    fileSize = fs.statSync(absPath).size || 0;
+  } catch {
+    fileSize = 0;
+  }
+  const displayName = requestedName || saved.fileName;
+  const uploadedBy = req.user?.email ?? req.user?.name ?? null;
+
+  try {
+    const hasBidDocuments = await tableExists("bid_documents");
+    if (!hasBidDocuments) {
+      if (await tableHasColumn("bids", "doc_links")) {
+        const entry = { kind, name: displayName, url: publicUrl };
+        if (columnId !== null) entry.column_id = columnId;
+        await pool
+          .query(`UPDATE public.bids SET doc_links = COALESCE(doc_links, '[]'::jsonb) || $2::jsonb WHERE id = $1`, [
+            bidId,
+            JSON.stringify(entry),
+          ])
+          .catch(() => {});
+        const normalized = normalizeDoc(entry, bidId, "doc_links");
+        return res.json({ ok: true, file: normalized });
+      }
+      return res.status(500).json({ error: "table_missing" });
+    }
+
+    const columns = await getTableColumns("bid_documents");
+    if (!columns.includes("bid_id")) {
+      return res.status(500).json({ error: "table_missing" });
+    }
+
+    const insertColumns = [];
+    const placeholders = [];
+    const params = [];
+
+    function addField(field, value, options = {}) {
+      if (!columns.includes(field) && !options.force) return;
+      if (options.literal) {
+        insertColumns.push(field);
+        placeholders.push(options.literal);
+        return;
+      }
+      insertColumns.push(field);
+      params.push(value);
+      let placeholder = `$${params.length}`;
+      if (options.cast) placeholder += options.cast;
+      placeholders.push(placeholder);
+    }
+
+    addField("bid_id", bidId, { force: true });
+    if (columns.includes("kind")) addField("kind", kind || null);
+    if (columns.includes("name")) addField("name", displayName);
+    else if (columns.includes("file_name")) addField("file_name", displayName);
+    if (columns.includes("url")) addField("url", publicUrl);
+    else if (columns.includes("file_path")) addField("file_path", publicUrl);
+    if (columns.includes("column_id")) addField("column_id", columnId);
+    if (columns.includes("uploaded_by")) addField("uploaded_by", uploadedBy);
+    if (columns.includes("mime_type")) addField("mime_type", mimeType);
+    if (columns.includes("file_size")) addField("file_size", fileSize);
+    if (columns.includes("meta")) addField("meta", JSON.stringify({ column_id: columnId }), { cast: "::jsonb" });
+    if (columns.includes("uploaded_at")) addField("uploaded_at", null, { literal: "now()" });
+    if (columns.includes("created_at")) addField("created_at", null, { literal: "now()" });
+
+    if (!insertColumns.length) {
+      return res.status(500).json({ error: "table_missing" });
+    }
+
+    const sql = `INSERT INTO public.bid_documents (${insertColumns.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING id`;
+    const { rows } = await pool.query(sql, params);
+    const insertedId = rows[0]?.id ?? null;
+
+    const docs = await gatherBidDocuments(bidId);
+    const file =
+      docs.find((doc) =>
+        insertedId ? doc?.id === insertedId : doc?.source === "bid_documents" && doc?.url === publicUrl
+      ) || {
+        id: insertedId,
+        bid_id: bidId,
+        kind,
+        name: displayName,
+        url: publicUrl,
+        column_id: columnId,
+        uploaded_at: new Date().toISOString(),
+        source: "bid_documents",
+      };
+
+    res.json({ ok: true, file });
+  } catch (e) {
+    tryRemoveLocalFile(publicUrl);
+    console.error("[/api/bids/:id/docs/upload-dataurl]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+router.post("/:id/docs/delete", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  const body = req.body || {};
+  const url = safeString(body.url ?? "");
+  const docIdRaw = body.id ?? body.doc_id ?? body.document_id;
+  const docId = Number.isFinite(Number(docIdRaw)) ? Number(docIdRaw) : null;
+
+  if (!url && docId === null) {
+    return res.status(400).json({ error: "missing_identifier" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    let deleted = 0;
+    let targetUrl = url;
+
+    if (await tableExists("bid_documents")) {
+      if (docId !== null) {
+        const del = await client.query(
+          `DELETE FROM public.bid_documents WHERE id = $1 AND bid_id = $2 RETURNING url, file_path`,
+          [docId, bidId]
+        );
+        if (del.rowCount) {
+          deleted += del.rowCount;
+          const resolvedUrl = safeString(del.rows[0]?.url ?? del.rows[0]?.file_path ?? "");
+          targetUrl = targetUrl || resolvedUrl;
+          tryRemoveLocalFile(resolvedUrl);
+        }
+      }
+      if (targetUrl) {
+        const delUrl = await client.query(
+          `DELETE FROM public.bid_documents WHERE bid_id = $1 AND (url = $2 OR file_path = $2) RETURNING url, file_path`,
+          [bidId, targetUrl]
+        );
+        if (delUrl.rowCount) {
+          deleted += delUrl.rowCount;
+          tryRemoveLocalFile(delUrl.rows[0]?.url ?? delUrl.rows[0]?.file_path ?? null);
+        }
+      }
+    }
+
+    if (targetUrl && (await tableHasColumn("bids", "doc_links"))) {
+      const current = await client
+        .query(`SELECT doc_links FROM public.bids WHERE id = $1`, [bidId])
+        .then((r) => ensureArray(r.rows[0]?.doc_links))
+        .catch(() => []);
+      if (current.length) {
+        const filtered = current.filter((entry) => !matchesDocUrl(entry, targetUrl));
+        if (filtered.length !== current.length) {
+          await client.query(`UPDATE public.bids SET doc_links = $2::jsonb WHERE id = $1`, [bidId, JSON.stringify(filtered)]);
+          deleted += 1;
+        }
+      }
+    }
+
+    await client.query("COMMIT");
+    res.json({ ok: true, deleted });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    console.error("[/api/bids/:id/docs/delete]", e);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+router.get("/:id/history", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, event_type, payload, created_by, created_at
+         FROM public.job_events
+        WHERE bid_id = $1
+        ORDER BY created_at DESC
+        LIMIT 200`,
+      [bidId]
+    );
+    const events = rows.map((row) => ({
+      id: row.id,
+      type: row.event_type,
+      note: ensurePlainObject(row.payload).note ?? "",
+      photos: ensureArray(ensurePlainObject(row.payload).photos),
+      by: row.created_by ?? ensurePlainObject(row.payload).by ?? "",
+      created_at: row.created_at ?? null,
+    }));
+    res.json({ events });
+  } catch (e) {
+    console.error("[/api/bids/:id/history]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+router.get("/:id/docs-zip", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    const docs = await gatherBidDocuments(bidId);
+    if (!docs.length) {
+      return res.status(404).json({ error: "no_documents" });
+    }
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="bid_${bidId}_documents.zip"`);
+
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    archive.on("error", (err) => {
+      console.error("[/api/bids/:id/docs-zip] archive error", err);
+      try {
+        res.status(500).end();
+      } catch {}
+    });
+
+    archive.pipe(res);
+
+    let appended = 0;
+    for (const doc of docs) {
+      try {
+        // Sequential awaits keep memory and outbound requests bounded.
+        const ok = await appendDocToArchive(archive, doc);
+        if (ok) appended += 1;
+      } catch (e) {
+        console.warn("[/api/bids/:id/docs-zip] skipping doc", doc?.url, e?.message);
+      }
+    }
+
+    if (!appended) {
+      archive.append(Buffer.from("No documents available"), { name: "readme.txt" });
+    }
+
+    await archive.finalize();
+  } catch (e) {
+    console.error("[/api/bids/:id/docs-zip]", e);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "server_error" });
+    } else {
+      res.end();
+    }
   }
 });
 
@@ -243,6 +907,33 @@ router.get("/:id/details", requireAuth, async (req, res) => {
     res.json(details);
   } catch (e) {
     console.error("[/api/bids/:id/details:get]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+router.get("/:id/intake", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    const details = await loadBidDetails(bidId);
+    if (!details) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    const onboarding = ensurePlainObject(details.onboarding);
+    const intake = {
+      customer_name: onboarding.customer_name ?? onboarding.homeowner ?? details.homeowner ?? null,
+      customer_phone: onboarding.customer_phone ?? onboarding.phone ?? details.customer_phone ?? null,
+      customer_email: onboarding.customer_email ?? details.customer_email ?? null,
+      home_address: onboarding.home_address ?? onboarding.address ?? details.home_address ?? null,
+      order_number: onboarding.order_number ?? onboarding.order_no ?? details.order_number ?? null,
+      notes: onboarding.notes ?? details.notes ?? null,
+    };
+    const combined = { ...onboarding, ...intake, raw: onboarding };
+    res.json(combined);
+  } catch (e) {
+    console.error("[/api/bids/:id/intake]", e);
     res.status(500).json({ error: "server_error" });
   }
 });
@@ -298,6 +989,61 @@ router.patch("/:id/details", requireAuth, async (req, res) => {
     res.json(updated);
   } catch (e) {
     console.error("[/api/bids/:id/details:patch]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+router.get("/:id/model", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    const model = await loadBidModel(bidId);
+    if (!model) {
+      return res.json({ columns: [], lines: [], cards_count: 0, units_count: 0 });
+    }
+    res.json({
+      columns: model.columns,
+      lines: model.lines,
+      cards_count: model.cards_count,
+      units_count: model.units_count,
+      projectSnapshot: model.projectSnapshot,
+    });
+  } catch (e) {
+    console.error("[/api/bids/:id/model]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+router.get("/:id/preview", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) {
+    return res.status(400).json({ error: "invalid_bid_id" });
+  }
+  try {
+    const model = await loadBidModel(bidId);
+    if (!model) return res.json([]);
+    const preview = [];
+    for (const column of model.columns) {
+      const columnId = column?.column_id;
+      const units = toNumberOrZero(column?.units);
+      for (const line of model.lines) {
+        const lineId = line?.line_id;
+        const qtyTotal = toNumberOrZero(line?.qty_per_unit) * units;
+        const lineTotal = toNumberOrZero(line?.unit_price) * qtyTotal;
+        preview.push({
+          line_id: lineId,
+          column_id: columnId,
+          qty_total: qtyTotal,
+          line_total: lineTotal,
+          units,
+        });
+      }
+    }
+    res.json(preview);
+  } catch (e) {
+    console.error("[/api/bids/:id/preview]", e);
     res.status(500).json({ error: "server_error" });
   }
 });
