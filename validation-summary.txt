@@ -1,0 +1,29 @@
+cabinet-manufacturing-api • Phase 4 validation summary (2025-11-08)
+
+Inputs
+------
+• Source schema provided: expected `backup.sql` (Nov 8 2025) — NOT FOUND in repository
+• Application code scanned: /routes, /pages, app.js, migrations/
+
+Endpoint probes
+---------------
+No CRUD simulations executed. Without the backup schema (or a live DB seeded from it) the API cannot be exercised safely; running endpoints would produce unknown failures due to possible column drift.
+
+Static checks performed
+-----------------------
+• Parsed representative `pool.query(...)` usage across admin, sales, purchasing, search, options, and task routers.
+• Identified tables/fields referenced in code that lack migrations in the repo (`quote_ack_tokens`, `service_requests`, `task_reschedule_requests`, `options_kv`, etc.).
+• Flagged columns that may not exist in the dump (e.g., `users.phone`, `bids.customer_email`).
+
+Outstanding gaps
+----------------
+1. Acquire `backup.sql` (Nov 8 2025) and restore to a disposable Postgres instance.
+2. Re-run automated comparison: `SELECT column_name,data_type FROM information_schema.columns` for every table touched by the API.
+3. Execute smoke CRUD calls once schema parity is confirmed:
+   • GET /api/health, /api/health/db
+   • GET /api/admin/users (requires admin auth)
+   • POST /api/tasks/:id/arrived (requires seeded task)
+   • POST /api/options/:key (requires option_sets/option_values tables)
+   • POST /api/bids/:id/package (validates sales fields)
+
+Until the dump is available, schema verification is incomplete and API routes may fail at runtime.

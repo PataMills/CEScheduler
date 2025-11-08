@@ -11,13 +11,14 @@
     "db:migrate": "node ./scripts/db-migrate.js",
     "db:seed": "node ./scripts/db-seed.js",
     "seed:min": "node ./scripts/db-seed-min.js",
-  "test": "cross-env NODE_ENV=test node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
-  "test:api": "cross-env NODE_ENV=test node --experimental-vm-modules ./node_modules/jest/bin/jest.js __tests__/api --runInBand",
-  "test:ui": "cross-env NODE_ENV=test playwright test",
-  "test:fast": "cross-env NODE_ENV=test SKIP_DB_BOOTSTRAP=1 node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
+    "test": "cross-env NODE_ENV=test node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
+    "test:api": "cross-env NODE_ENV=test node --experimental-vm-modules ./node_modules/jest/bin/jest.js __tests__/api --runInBand",
+    "test:ui": "cross-env NODE_ENV=test playwright test",
+    "test:fast": "cross-env NODE_ENV=test SKIP_DB_BOOTSTRAP=1 node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
     "smoke": "node scripts/smoke.js",
     "lint": "eslint .",
-    "format": "prettier -w ."
+    "format": "prettier -w .",
+    "migrate": "powershell -ExecutionPolicy Bypass -File scripts/migrate.ps1"
   },
   "dependencies": {
     "@azure/identity": "^4.13.0",
