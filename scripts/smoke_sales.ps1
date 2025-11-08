@@ -2,8 +2,8 @@ $ErrorActionPreference = "Stop"
 
 # ---- CONFIG ----
 $base = "http://localhost:3000"
-$salesEmail = "sales@example.com"        # real sales or admin user
-$salesPass  = "SalesPassword123!"        # real password
+$salesEmail = "wgminter@hotmail.com"        # real sales or admin user
+$salesPass  = "12345678"        # real password
 
 # IDs from your DB
 $numericJobId   = 1
@@ -15,8 +15,8 @@ $S = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 
 function CheckJson($name, $resp) {
   if ($resp.StatusCode -ge 400) { throw "$name failed: $($resp.StatusCode) $($resp.Content)" }
-  try { $j = $resp.Content | ConvertFrom-Json } catch { throw "$name: invalid JSON" }
-  Write-Host "• $name: OK"
+  try { $j = $resp.Content | ConvertFrom-Json } catch { throw "${name}: invalid JSON" }
+  Write-Host "• ${name}: OK"
   return $j
 }
 
