@@ -70,13 +70,26 @@ import teamTasksRoutes from "./routes/teamTasks.js";
 import tasksSearchRoutes from "./routes/tasksSearch.js";
 import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "./slack.js";
 import autoTasksRouter from "./routes/autoTasks.js";
-import teamTaskApi from "./routes/teamTaskApi.js";
+import registerTeamTaskApi from "./routes/teamTaskApi.js";
 import { pool, query } from "./db.js";
 
 // --- init app FIRST ---
 const app = express();
-app.use(express.json({ limit: "35mb" }));
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// --- per-request org context for RLS
+app.use(async (req, res, next) => {
+  try {
+    const orgId = (req.headers["x-org-id"] && String(req.headers["x-org-id"]).trim()) || "1";
+    await pool.query(`SELECT set_config('app.current_org_id', $1, true)`, [orgId]);
+    next();
+  } catch (err) {
+    console.error("RLS org middleware error:", err);
+    res.status(500).json({ error: "org-context" });
+  }
+});
 
 // --- core Sales/API routers ---
 app.use("/api/bids", bidsRouter);
@@ -150,7 +163,7 @@ app.use("/admin/users", requireAuthPage);
 // Mount teamTasksRoutes BEFORE tasksRouter to handle specific routes like /api/tasks/:id/ontheway
 app.use(teamTasksRoutes);
 app.use(tasksSearchRoutes);
-app.use(teamTaskApi);
+registerTeamTaskApi(app);
 
 app.use("/api/myday", mydayRouter);
 app.use("/api/tasks", tasksRouter);

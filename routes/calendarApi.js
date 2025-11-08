@@ -65,7 +65,7 @@ router.get("/events", async (req, res) => {
       }
     }));
 
-    res.json({ events });
+    res.json(Array.isArray(events) ? events : []);
   } catch (e) {
     console.error("[CAL EVENTS ERR]", e);
     res.status(500).json({ error: "db_error", detail: e.message });

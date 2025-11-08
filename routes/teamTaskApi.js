@@ -4,8 +4,15 @@ import { pool } from '../db.js';
 
 const router = express.Router();
 
+const STATUS_MAP = {
+  ontheway: 'in_progress',
+  arrived: 'in_progress',
+  wip: 'in_progress',
+  complete: 'complete'
+};
+
 /** GET /api/team/task?id=7631 */
-router.get('/api/team/task', async (req, res) => {
+router.get('/task', async (req, res) => {
   const id = Number(req.query.id);
   if (!id) return res.status(400).json({ error: 'bad_id' });
   try {
@@ -39,4 +46,53 @@ router.get('/api/team/task', async (req, res) => {
   }
 });
 
-export default router;
+router.patch('/task/:id/status', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad_id' });
+
+  const rawStatus = (req.body?.status || '').toString().trim().toLowerCase();
+  if (!rawStatus || !STATUS_MAP[rawStatus]) {
+    return res.status(400).json({ error: 'bad_status', allowed: Object.keys(STATUS_MAP) });
+  }
+
+  const noteInput = (req.body?.note ?? '').toString().trim();
+  const note = noteInput.length ? noteInput : null;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `UPDATE public.install_tasks
+         SET status = $1,
+             updated_at = now()
+       WHERE id = $2
+       RETURNING id, status`,
+      [STATUS_MAP[rawStatus], id]
+    );
+
+    if (!rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'not_found' });
+    }
+
+    await client.query(
+      `INSERT INTO public.task_events (task_id, task_table, event_type, note, at)
+       VALUES ($1, $2, $3, $4, now())`,
+      [id, 'install_tasks', rawStatus, note]
+    );
+
+    await client.query('COMMIT');
+    const out = rows[0];
+    res.json({ ok: true, id: out.id, status: out.status });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[team task status patch]', err);
+    res.status(500).json({ error: 'server_error' });
+  } finally {
+    client.release();
+  }
+});
+
+export default function registerTeamTaskApi(app) {
+  app.use('/api/team', router);
+}
