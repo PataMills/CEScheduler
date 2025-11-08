@@ -25,6 +25,7 @@ Write-Host "== Sales Smoke =="
 # 1) Login
 $loginResp = Invoke-WebRequest -UseBasicParsing -WebSession $S -Method POST `
   -Uri "$base/api/auth/login" `
+  -Headers @{ Accept = "application/json"; "X-Requested-With" = "XMLHttpRequest" } `
   -ContentType "application/json" `
   -Body (@{ email=$salesEmail; password=$salesPass } | ConvertTo-Json)
 CheckJson "login" $loginResp | Out-Null
