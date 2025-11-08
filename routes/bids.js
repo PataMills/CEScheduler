@@ -5,6 +5,10 @@ import { requireAuth } from "./auth.js";
 const router = Router();
 const allow = (_req, _res, next) => next(); // TODO: swap to your real auth guard
 
+router.get("/__ping", (_req, res) => {
+  res.json({ ok: true, from: "routes/bids.js" });
+});
+
 const DETAILS_SQL = `
   SELECT id, job_id, builder_id, name, status, notes,
          sales_person, onboarding, doc_links, calc_snapshot,
