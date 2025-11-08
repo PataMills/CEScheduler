@@ -11,7 +11,7 @@ import scheduleRouter from "./routes/schedule.js";
 import resourcesRouter from "./routes/resources.js";
 import mydayRouter from "./routes/myday.js";
 import tasksRouter from "./routes/tasks.js";
-import registerBids from "./routes/bids.js";
+import bidsRouter from "./routes/bids.js";
 import registerPurchasing from "./routes/purchasing.js";
 import registerPurchasingWorklist from "./pages/purchasingWorklist.js";
 import registerBidsInline from "./pages/bidsInline.js";
@@ -66,6 +66,7 @@ import registerSalesReschedule from "./pages/salesReschedule.js";
 import registerSalesServiceSchedule from "./pages/salesServiceSchedule.js";
 import salesExtraRouter from "./routes/salesExtra.js";
 import availabilityRouter from "./routes/availability.js";
+import optionsRouter from "./routes/options.js";
 import teamTasksRoutes from "./routes/teamTasks.js";
 import tasksSearchRoutes from "./routes/tasksSearch.js";
 import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "./slack.js";
@@ -76,6 +77,15 @@ import { pool, query } from "./db.js";
 // --- init app FIRST ---
 const app = express();
 app.use(express.json({ limit: "35mb" }));
+
+// --- core Sales/API routers ---
+app.use("/api/bids", bidsRouter);
+app.use("/api/bids", bidsRecentRouter);
+app.use("/api/jobs", jobsRouter);
+app.use("/api/availability", availabilityRouter);
+app.use("/api/options", optionsRouter);
+app.use("/api/sales", salesExtraRouter);
+app.use("/", salesRouter);
 
 const skipDbBootstrap = process.env.SKIP_DB_BOOTSTRAP === "1";
 
@@ -101,7 +111,6 @@ app.get("/api/health/db", async (req, res) => {
   }
 });
 
-registerBids(app);
 registerPurchasing(app);
 
 app.get('/qbo/check', async (_req, res) => {
@@ -150,10 +159,7 @@ app.use("/api/tasks", tasksRouter);
 app.use("/api/tasks", autoTasksRouter);
 app.use("/api/schedule", scheduleRouter);
 app.use("/api/resources", resourcesRouter);
-app.use("/api/jobs", jobsRouter);
 app.use("/api/crews", crewsRouter);
-app.use("/api/availability", availabilityRouter);
-app.use(salesRouter);
 
 // GET /api/files?bid=:id -> files for a bid (delegates to bid's doc_links)
 app.get('/api/files', async (req, res) => {
@@ -206,17 +212,14 @@ app.use("/team-task",      requireRolePage(["admin","ops","installer","service",
 app.use("/myday-teams",    requireRolePage(["admin","ops","installer","service","manufacturing","assembly","delivery"]));
 
 app.use("/api/search", searchRouter);
-app.use("/api/bids-recent", bidsRecentRouter);
 app.use("/api/calendar", calendarApiRouter);
 app.use(rescheduleRouter);
-app.use(salesRouter);         
 app.use("/api/lookup", lookupRouter);                   
 app.use("/api/reminders", remindersRouter);
 app.use("/api/ops-dashboard", opsDashboardRouter);
 app.use("/api/issues", issuesRouter);
 app.use("/api", materialRouter);
 app.use("/api", poRouter);
-app.use("/api/sales", salesExtraRouter);
 
 // GET /api/team/search?q=&crew=&days=14   (next N days)
 app.get("/api/team/search", async (req, res) => {

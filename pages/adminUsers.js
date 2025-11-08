@@ -128,9 +128,10 @@ async function loadCrews() {
 // Load existing users
 async function loadUsers() {
   try {
-    const users = await j('/api/admin/users');
+    const data = await j('/api/admin/users');
     const tbody = $('#users tbody');
-    tbody.innerHTML = (Array.isArray(users) ? users : []).map(u => \`
+    const list = Array.isArray(data) ? data : Array.isArray(data?.users) ? data.users : [];
+    tbody.innerHTML = list.map(u => \`
       <tr>
         <td>\${u.name || ''}</td>
         <td>\${u.email || ''}</td>
@@ -171,7 +172,7 @@ $('#createBtn').onclick = async () => {
   }
 
   try {
-    await j('/api/auth/register', {
+    await j('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, email, phone, role, crew_name: crew || null, password })
@@ -204,8 +205,9 @@ window.editUser = async (id) => {
   // Load user data
   let user;
   try {
-    const users = await j('/api/admin/users');
-    user = (users || []).find(u => u.id === id);
+    const data = await j('/api/admin/users');
+    const list = Array.isArray(data) ? data : Array.isArray(data?.users) ? data.users : [];
+    user = list.find(u => u.id === id);
     if (!user) throw new Error('User not found');
   } catch(e) {
     document.getElementById('editMsg').textContent = 'Error loading user';

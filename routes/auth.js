@@ -198,7 +198,7 @@ router.get("/me", requireAuth, (req, res) => {
 
 // Read-only list of roles used for privileges
 router.get('/roles', (_req, res) => {
-  const roles = ['admin','sales','ops','installer','service','manufacturing','assembly','delivery'];
+  const roles = ['admin','sales','ops','purchasing','installer','service','manufacturing','assembly','delivery'];
   res.json({ roles });
 });
 

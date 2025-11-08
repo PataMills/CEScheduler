@@ -13,6 +13,33 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 function ok(res, data) { return res.json(data || { ok: true }); }
 function fail(res, e) { console.error('[salesExtra]', e); return res.status(500).json({ error: e.message || String(e) }); }
 
+// Alias: /api/sales/check-availability -> /api/availability/check with same query string
+router.get('/check-availability', async (req, res) => {
+  try {
+    const qs = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+    res.redirect(307, '/api/availability/check' + qs);
+  } catch (e) {
+    console.error('[sales alias check-availability]', e);
+    res.status(500).json({ error: 'alias_failed' });
+  }
+});
+
+// Alias: /api/sales/create-service-task -> existing /api/services logic
+router.post('/create-service-task', async (req, res) => {
+  try {
+    const resp = await fetch(`http://localhost:${process.env.PORT || 3000}/api/services`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(req.body || {})
+    });
+    const data = await resp.json().catch(() => ({}));
+    res.status(resp.status).json(data);
+  } catch (e) {
+    console.error('[sales alias create-service-task]', e);
+    res.status(500).json({ error: 'alias_failed' });
+  }
+});
+
 // GET /api/sales/tasks?start=YYYY-MM-DD&end=YYYY-MM-DD&types=install,service&query=foo
 router.get('/tasks', async (req, res) => {
   try {
