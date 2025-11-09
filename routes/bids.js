@@ -253,7 +253,7 @@ async function loadBidModel(bidId) {
       .catch(() => ({ rows: [] })),
     pool
       .query(
-        `SELECT id, description, qty_per_unit, unit_price, pricing_method, sort_order
+        `SELECT id, description, category, qty_per_unit, unit_price, pricing_method, sort_order
            FROM public.bid_lines
           WHERE bid_id = $1
           ORDER BY sort_order, id`,
@@ -298,6 +298,7 @@ async function loadBidModel(bidId) {
     snapshotLines = linesQ.rows.map((line, idx) => ({
       line_id: Number(line.id),
       description: safeString(line.description ?? ""),
+      category: safeString(line.category ?? null, null),
       qty_per_unit: toNumberOrZero(line.qty_per_unit),
       unit_price: toNumberOrZero(line.unit_price),
       pricing_method: safeString(line.pricing_method ?? "fixed") || "fixed",
@@ -308,6 +309,7 @@ async function loadBidModel(bidId) {
   const lines = snapshotLines.map((line, idx) => ({
     line_id: Number.isFinite(Number(line.line_id ?? line.id)) ? Number(line.line_id ?? line.id) : idx + 1,
     description: safeString(line.description ?? line.name ?? ""),
+    category: safeString(line.category ?? null, null),
     qty_per_unit: toNumberOrZero(line.qty_per_unit ?? line.qty ?? line.quantity ?? 0),
     unit_price: toNumberOrZero(line.unit_price ?? line.price ?? 0),
     pricing_method: safeString(line.pricing_method ?? line.method ?? "fixed") || "fixed",

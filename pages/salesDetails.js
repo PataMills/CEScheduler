@@ -93,8 +93,39 @@ export default function registerSalesDetails(app){
     </div>
     <div class="grid g2" style="gap:8px">
       <div><label>Order Number</label><input id="info_order_no"/></div>
-      <div></div>
+      <div><label>Install Date</label><input id="info_install_date" type="date"/></div>
     </div>
+
+    <div class="grid g2" style="gap:8px; margin-top:8px">
+      <div><label>Sales Person</label><input id="info_sales_person"/></div>
+      <div><label>Customer Type</label>
+        <select id="info_customer_type">
+          <option value="Builder">Builder</option>
+          <option value="Homeowner">Homeowner</option>
+          <option value="D2C">Direct-to-Consumer</option>
+        </select>
+      </div>
+
+      <div><label>Builder</label><input id="info_builder"/></div>
+      <div><label>Builder Phone #</label><input id="info_builder_phone"/></div>
+
+      <div><label>Homeowner</label><input id="info_homeowner"/></div>
+      <div><label>Homeowner Phone #</label><input id="info_homeowner_phone"/></div>
+
+      <div><label>Home Address</label><input id="info_home_address"/></div>
+      <div><label>Lot#/Plan Name</label><input id="info_lot_plan"/></div>
+
+      <div><label>Customer Email</label><input id="info_customer_email" type="email"/></div>
+      <div><label>How to get in?</label><input id="info_access_notes"/></div>
+
+      <div><label>Installation</label>
+        <select id="info_installation"><option>Yes</option><option>No</option></select>
+      </div>
+      <div><label>Delivery</label>
+        <select id="info_delivery"><option>Yes</option><option>No</option></select>
+      </div>
+    </div>
+
     <div class="grid" style="margin-top:8px; gap:8px">
       <div><label>Notes</label><textarea id="info_notes"></textarea></div>
       <div><label>Specific Notes (per plan / hardware locations)</label><textarea id="info_specific_notes"></textarea></div>
@@ -271,13 +302,14 @@ function addDocChip(host, d, bidId){
 async function loadBidDetails(){
   if(!bid) return;
 
-  // Pull bid details (legacy) and documents via new API
-  const [legacyDetails, docsResp] = await Promise.all([
+  const [legacyDetails, docsResp, summary] = await Promise.all([
     fetchSoft('/api/bids/'+bid+'/details'),
-    fetchSoft('/api/bids/'+bid+'/documents')
+    fetchSoft('/api/bids/'+bid+'/documents'),
+    fetchSoft('/api/bids/'+bid+'/summary')
   ]);
 
-  const ob = (legacyDetails && legacyDetails.onboarding) ? legacyDetails.onboarding : {};
+  const info = summary && summary.info ? summary.info : {};
+  const ob = legacyDetails && legacyDetails.onboarding ? legacyDetails.onboarding : {};
   const docs = (Array.isArray(docsResp) && docsResp.length)
     ? docsResp
     : (legacyDetails && Array.isArray(legacyDetails.doc_links) ? legacyDetails.doc_links : []);
@@ -285,13 +317,30 @@ async function loadBidDetails(){
   cachedDocs = Array.isArray(docs) ? docs : [];
   setBadgeText('badgeDocs', cachedDocs.length, 'Doc', 'Docs');
 
-  // Set only bid-level fields we keep
-  function set(id,val){ const e=document.querySelector(id); if(e) e.value = (val==null?'':String(val)); }
+  function set(sel,val){ const e=document.querySelector(sel); if(!e) return; e.value = val == null ? '' : String(val); }
+  function setSel(sel,val){ const el=document.querySelector(sel); if(!el) return; if(val==null){ return; } const str=String(val); if(Array.from(el.options).some(opt=>opt.value===str)){ el.value=str; } else { el.value=str; } }
+
   set('#info_order_no', ob.order_no);
   set('#info_notes', ob.notes);
   set('#info_specific_notes', ob.specific_notes);
 
-  // Bid-level docs list using addDocChip
+  set('#info_sales_person', info.sales_person ?? ob.sales_person);
+  setSel('#info_customer_type', info.customer_type ?? ob.customer_type);
+  set('#info_builder', info.builder ?? ob.builder);
+  set('#info_builder_phone', ob.builder_phone);
+  set('#info_homeowner', info.customer_name ?? ob.homeowner);
+  set('#info_homeowner_phone', ob.homeowner_phone);
+  set('#info_home_address', info.home_address ?? ob.home_address);
+  set('#info_lot_plan', info.lot_plan_name ?? ob.lot_plan);
+  set('#info_customer_email', info.customer_email ?? ob.customer_email);
+  set('#info_access_notes', ob.access_notes);
+
+  const installDate = ob.install_date ? String(ob.install_date).slice(0,10) : '';
+  set('#info_install_date', installDate);
+
+  setSel('#info_installation', ob.installation === false ? 'No' : 'Yes');
+  setSel('#info_delivery', ob.delivery === false ? 'No' : 'Yes');
+
   const host = document.getElementById('bidDocsList');
   if (host) {
     host.innerHTML = '';
@@ -321,16 +370,32 @@ function parseMetaString(s){
 
   async function saveBid(){
     if(!bid) return alert('Missing bid id');
-    function v(id){ return ($(id)&&$(id).value) ? $(id).value.trim() : ''; }
+    const v = (sel) => (document.querySelector(sel)?.value || '').trim();
+    const yn = (sel) => (document.querySelector(sel)?.value || 'Yes') === 'Yes';
+
     const onboarding = {
-      order_no: (document.querySelector('#info_order_no')?.value || '').trim(),
-      notes: (document.querySelector('#info_notes')?.value || '').trim(),
-      specific_notes: (document.querySelector('#info_specific_notes')?.value || '').trim()
+      order_no:        v('#info_order_no'),
+      notes:           v('#info_notes'),
+      specific_notes:  v('#info_specific_notes'),
+      sales_person:    v('#info_sales_person'),
+      customer_type:   v('#info_customer_type'),
+      builder:         v('#info_builder'),
+      builder_phone:   v('#info_builder_phone'),
+      homeowner:       v('#info_homeowner'),
+      homeowner_phone: v('#info_homeowner_phone'),
+      home_address:    v('#info_home_address'),
+      lot_plan:        v('#info_lot_plan'),
+      install_date:    v('#info_install_date'),
+      customer_email:  v('#info_customer_email'),
+      access_notes:    v('#info_access_notes'),
+      installation:    yn('#info_installation'),
+      delivery:        yn('#info_delivery')
     };
+
     try{
       await fetchJSON('/api/bids/'+bid+'/details', {
         method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ onboarding: onboarding })
+        body: JSON.stringify({ onboarding })
       });
       alert('Saved ✓');
     } catch(e){ alert(e.message||'Save failed'); }

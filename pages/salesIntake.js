@@ -1525,7 +1525,11 @@ document.addEventListener('DOMContentLoaded', async function(){
       try {
   const colsRes = await fetch('/api/bids/' + bidId + '/columns-details', opts);
         if (colsRes.ok) {
-          columnDetails = await colsRes.json();
+          const arr = await colsRes.json();
+          const entries = Array.isArray(arr)
+            ? arr.map((row) => [Number(row?.column_id), row]).filter(([key]) => Number.isFinite(key))
+            : [];
+          columnDetails = Object.fromEntries(entries);
         }
       } catch (err) {
         console.warn('[prefill] columns-details load failed', err);
