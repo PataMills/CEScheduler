@@ -20,6 +20,23 @@ fs.mkdirSync(BID_UPLOAD_ROOT, { recursive: true });
 const tablePresenceCache = new Map();
 const tableColumnsCache = new Map();
 
+// Transaction helper to guarantee BEGIN/COMMIT/ROLLBACK and client.release()
+export async function withTx(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch (_) {}
+    console.error("[TX ERROR]", err);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 router.get("/__ping", (_req, res) => {
   res.json({ ok: true, from: "routes/bids.js" });
 });
@@ -1255,6 +1272,38 @@ router.get("/:id/intake", requireAuth, async (req, res) => {
   }
 });
 
+// Save intake fields (enforce homeowner name/phone; persist lot_plan in onboarding)
+router.post("/:id/intake", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) return res.status(400).json({ error: "invalid_bid_id" });
+
+  const body = req.body || {};
+  const homeownerName = (body.homeowner_name ?? body.homeowner ?? "").toString().trim();
+  const homeownerPhone = (body.homeowner_phone ?? body.phone ?? "").toString().trim();
+  const lotPlan = (body.lot_plan ?? body.lotPlan ?? "").toString();
+
+  if (!homeownerName || !homeownerPhone) {
+    return res.status(422).json({ error: "Homeowner name and phone are required." });
+  }
+
+  try {
+    await pool.query(
+      `UPDATE public.bids
+         SET onboarding = COALESCE(onboarding, '{}'::jsonb)
+                           || jsonb_build_object('homeowner', $1, 'homeowner_phone', $2)
+                           || CASE WHEN $3 = '' THEN '{}'::jsonb ELSE jsonb_build_object('lot_plan', $3) END,
+             updated_at = now()
+       WHERE id = $4`,
+      [homeownerName, homeownerPhone, lotPlan, bidId]
+    );
+    const details = await loadBidDetails(bidId);
+    return res.json({ ok: true, details });
+  } catch (e) {
+    console.error("[/api/bids/:id/intake:post]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
 router.patch("/:id/details", requireAuth, async (req, res) => {
   const bidId = Number(req.params.id);
   if (!Number.isFinite(bidId)) {
@@ -1702,33 +1751,30 @@ router.delete("/lines/:lineId", requireAuth, async (req, res) => {
 router.post("/:id/reset-columns", requireAuth, async (req, res) => {
   const bidId = Number(req.params.id);
   if (!Number.isFinite(bidId)) return res.status(400).json({ error: "invalid_bid_id" });
-
-  const client = await pool.connect();
-  const safeExec = async (sql, params = []) => {
-    try {
-      await client.query(sql, params);
-    } catch (err) {
-      if (err?.code !== "42P01" && err?.code !== "42703") {
-        throw err;
-      }
-    }
-  };
-
   try {
-    await client.query("BEGIN");
-    await safeExec(`DELETE FROM public.bid_line_cells WHERE bid_id = $1`, [bidId]);
-    await safeExec(`DELETE FROM public.bid_column_details WHERE bid_id = $1`, [bidId]);
-    await safeExec(`DELETE FROM public.bid_documents WHERE bid_id = $1 AND column_id IS NOT NULL`, [bidId]);
-    await safeExec(`DELETE FROM public.bid_lines WHERE bid_id = $1`, [bidId]);
-    await safeExec(`DELETE FROM public.bid_columns WHERE bid_id = $1`, [bidId]);
-    await client.query("COMMIT");
+    await withTx(async (client) => {
+      const exec = async (sql, params = []) => {
+        try {
+          await client.query(sql, params);
+        } catch (err) {
+          if (err?.code === "42P01" || err?.code === "42703") {
+            // missing table/column: ignore for idempotency
+            return;
+          }
+          console.error("[reset-columns] root SQL error", err);
+          throw err; // rethrow so tx rolls back
+        }
+      };
+      await exec(`DELETE FROM public.bid_line_cells WHERE bid_id = $1`, [bidId]);
+      await exec(`DELETE FROM public.bid_column_details WHERE bid_id = $1`, [bidId]);
+      await exec(`DELETE FROM public.bid_documents WHERE bid_id = $1 AND column_id IS NOT NULL`, [bidId]);
+      await exec(`DELETE FROM public.bid_lines WHERE bid_id = $1`, [bidId]);
+      await exec(`DELETE FROM public.bid_columns WHERE bid_id = $1`, [bidId]);
+    });
     res.json({ ok: true });
   } catch (e) {
-    await client.query("ROLLBACK").catch(() => {});
     console.error("[/api/bids/:id/reset-columns] error", e);
     res.status(500).json({ error: "server_error", detail: e?.message });
-  } finally {
-    client.release();
   }
 });
 

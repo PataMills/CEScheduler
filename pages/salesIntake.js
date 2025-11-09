@@ -77,7 +77,7 @@ export default function registerSalesIntake(app) {
               <datalist id="dl-sales-person" data-key="sales_person"></datalist>
             </div>
             <div>
-              <label class="req">Designer</label>
+              <label>Designer</label>
               <input id="designer" list="dl-designer" placeholder="Type or pick…"/>
               <datalist id="dl-designer" data-key="designer"></datalist>
             </div>
@@ -90,16 +90,16 @@ export default function registerSalesIntake(app) {
             </div>
 
             <div>
-              <label class="req">Builder</label>
+              <label>Builder</label>
               <input id="builder_name" list="dl-builder" placeholder="Type or pick…"/>
               <datalist id="dl-builder" data-key="builder"></datalist>
             </div>
             <div><label>Builder Phone #</label><input id="builder_phone" placeholder="(###) ###-####"/></div>
-            <div><label>Homeowner</label><input id="homeowner" placeholder="Homeowner"/></div>
+            <div><label class="req">Homeowner</label><input id="homeowner" placeholder="Homeowner"/></div>
 
-            <div><label>Homeowner Phone #</label><input id="homeowner_phone" placeholder="(###) ###-####"/></div>
+            <div><label class="req">Homeowner Phone #</label><input id="homeowner_phone" placeholder="(###) ###-####"/></div>
             <div><label class="req">Home Address</label><input id="home_address" placeholder="Street, City, ST ZIP"/></div>
-            <div><label class="req">Lot#/Plan Name</label><input id="lot_plan" placeholder="Lot / Plan"/></div>
+            <div><label>Lot#/Plan Name</label><input id="lot_plan" placeholder="Lot / Plan"/></div>
 
             <div><label class="req">Install Date</label><input id="install_date" type="date"/></div>
             <div><label class="req">Customer Email</label><input id="customer_email" type="email" placeholder="name@domain.com"/></div>
@@ -819,10 +819,13 @@ function addColumn(data){
 function validate(){
   var missing = [];
   [
-    ['sales_person','Sales Person'],['designer','Designer'],
-    ['builder_name','Builder'],['home_address','Home Address'],
-    ['lot_plan','Lot/Plan'],['install_date','Install Date'],
-    ['customer_email','Customer Email'],['deposit_pct','% Deposit']
+    ['sales_person','Sales Person'],
+    ['homeowner','Homeowner'],
+    ['homeowner_phone','Homeowner Phone'],
+    ['home_address','Home Address'],
+    ['install_date','Install Date'],
+    ['customer_email','Customer Email'],
+    ['deposit_pct','% Deposit']
   ].forEach(function(p){
     var el=$(p[0]); if(!el||!String(el.value||'').trim()){ missing.push(p[1]); if(el) el.classList.add('invalid'); } else if(el){ el.classList.remove('invalid'); }
   });
