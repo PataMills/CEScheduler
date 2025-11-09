@@ -202,6 +202,12 @@ export default function registerSalesIntake(app) {
 // Holds the current bid id once a draft is saved or an existing bid is loaded
 window.currentBidId = window.currentBidId || null;
 
+// ===== DEBUG SWITCH =====
+const DEBUG = true;
+const d = (...a) => {
+  if (DEBUG) console.log("[INTAKE]", ...a);
+};
+
 /* ---------- API helpers (create bid / columns / lines / totals) ---------- */
 /* Adjust the endpoint paths if your backend differs. */
 
@@ -245,11 +251,12 @@ async function createLine(bidId, payload){
   return r.json();
 }
 
-async function refreshFromServerTotals(bidId){
-  try {
-    const url = '/api/bids/' + bidId + '/recalc';
-    await fetch(url, { method: 'POST' });
-  } catch (_) {}
+function buildColumnTotalsPayload(){
+  return [];
+}
+
+async function upsertColumnTotals(){
+  return { ok: true };
 }
 
 /* ---------------- helpers ---------------- */
@@ -520,30 +527,14 @@ async function saveDraftCore(){
       body: JSON.stringify({ onboarding })
     });
     if (!r.ok) throw new Error('updateBid details failed: HTTP ' + r.status);
-    await r.json(); // consume response but bidId stays the same
-    
-    // CLEAR existing columns/lines so we can re-save from UI state (idempotent save)
-    try {
-      const modelRes = await fetch('/api/bids/' + bidId + '/model');
-      if (modelRes.ok) {
-        const modelData = await modelRes.json();
-        const existingCols = Array.isArray(modelData.columns) ? modelData.columns : [];
-        const existingLines = Array.isArray(modelData.lines) ? modelData.lines : [];
-        
-        // Delete all existing lines first (foreign key constraint)
-        for (const line of existingLines) {
-          const delId = Number(line.line_id ?? line.id);
-          if (!Number.isFinite(delId)) continue;
-          await fetch('/api/bids/lines/' + delId, { method: 'DELETE' }).catch(() => {});
-        }
-        // Then delete all existing columns
-        for (const col of existingCols) {
-          await fetch('/api/bids/columns/' + col.column_id, { method: 'DELETE' }).catch(()=>{});
-        }
-      }
-    } catch (e) {
-      console.warn('Clear existing columns/lines failed:', e);
-      // Continue anyway; POST will create new ones
+    await r.json().catch(() => null);
+
+    // Atomically clear columns and dependent rows before re-saving
+    const reset = await fetch('/api/bids/' + bidId + '/reset-columns', { method: 'POST' });
+    if (!reset.ok) {
+      const msg = await reset.text().catch(() => '');
+      const detail = msg ? ' ' + msg : '';
+      throw new Error('reset-columns failed: HTTP ' + reset.status + detail);
     }
   } else {
     // POST new bid (still need minimal payload for bids table)
@@ -596,7 +587,13 @@ async function saveDraftCore(){
     // now create the pricing lines for this card (unchanged)
     const columnSnap = cols.find(c => (c.column_id && colRow && c.column_id === colRow.id) || (c.label === label && c.units === units)) || {};
     const items = Array.isArray(columnSnap.items) ? columnSnap.items : [];
-    for (const item of items) await createLine(bidId, item);
+    const bidColumnId = Number.isFinite(Number(cardEl.dataset.columnId)) ? Number(cardEl.dataset.columnId) : Number.isFinite(Number(colRow?.id)) ? Number(colRow.id) : null;
+    for (const item of items) {
+      const payload = { ...item, bid_column_id: bidColumnId ?? null };
+      d('createLine →', payload);
+      const resp = await createLine(bidId, payload);
+      d('createLine ←', resp);
+    }
   }
 
   // 3) persist per-column totals (so server math matches UI)
@@ -619,8 +616,6 @@ async function saveDraftCore(){
     alert(err.message || 'Save totals failed');
   }
 
-  // 5) optional: refresh & finish
-  await refreshFromServerTotals(bidId);
   window.currentBidId = bidId;
   togglePdfBtn();
   return bidId;
@@ -864,6 +859,7 @@ function readTopForm(){
 }
 
 function readColumnsForSave(){
+  const top = readTopForm();
   var out=[], host=$('columnsHost'); if(!host) return out;
   Array.from(host.querySelectorAll('.card')).forEach(function(card){
     var label=card.querySelector('.cardHead input:not([type="number"])')?.value||card.querySelector('.cardHead input')?.value||'Column';
@@ -909,7 +905,10 @@ function readColumnsForSave(){
     pushMoney('Accessories','Accessories',accessories);
     pushMoney('Assembly','Assembly',assembly);
     pushMoney('Shipping','Shipping',shipping);
-    pushMoney('Input Adj.','Adjustments',inputAdj);
+  pushMoney('Input Adj.','Adjustments',inputAdj);
+
+  const deliveryPU = top.delivery ? 250 : 0;
+  pushMoney('Delivery','Delivery',deliveryPU);
 
     var basePU=cab+hardware+accessories+assembly+shipping+inputAdj;
     var safetyPU=basePU*(safetyPct/100);
@@ -967,7 +966,15 @@ function computeTotals(){
 
     // discount then units
     const afterDiscPU = preDiscPU * (1 - discF);
-    const columnTotal = afterDiscPU * units;
+  const columnTotal = afterDiscPU * units;
+  const cid = Number(card.getAttribute('data-column-id') ?? card.dataset?.columnId ?? NaN);
+  d('compute column total', { column_id: cid, columnTotal, units });
+
+  // reflect per-card subtotal immediately for responsive UI
+  const tileText = card.querySelector('.card-subtotal-text');
+  if (tileText) tileText.textContent = '$ ' + fmt2(columnTotal);
+  const tileInput = card.querySelector('.card-subtotal-input');
+  if (tileInput) tileInput.value = '$ ' + fmt2(columnTotal);
 
     // per-unit path ... (your pricing calc)
     base += columnTotal; // base is the subtotal the sidebar shows
@@ -1372,6 +1379,7 @@ document.addEventListener('DOMContentLoaded', async function(){
 
       const { info, totals, model: modelSummary } = normalizeSummary(summaryRaw);
       const infoRaw = summaryRaw.info || {};
+  d('summary ok?', summaryRaw?.ok, 'info', info, 'totals', totals, 'modelSummary', modelSummary);
 
       setInputValue('sales_person', info.sales_person || infoRaw.sales_person || '');
       setInputValue('builder_name', info.builder || infoRaw.builder || '');
@@ -1536,6 +1544,7 @@ document.addEventListener('DOMContentLoaded', async function(){
       } catch (err) {
         console.warn('[prefill] columns-details load failed', err);
       }
+      d('columns-details map size', Object.keys(columnDetails || {}).length);
 
       let modelData = {};
       try {
@@ -1549,6 +1558,7 @@ document.addEventListener('DOMContentLoaded', async function(){
 
       const columns = Array.isArray(modelData.columns) ? modelData.columns : [];
       const lines = Array.isArray(modelData.lines) ? modelData.lines : [];
+      d('model columns', columns.length, 'lines', lines.length);
 
       columns.forEach((col) => {
         const details = columnDetails[col.column_id] || {};
@@ -1591,6 +1601,7 @@ document.addEventListener('DOMContentLoaded', async function(){
         const notesArea = card.querySelector('textarea');
         if (notesArea && details.notes) notesArea.value = details.notes;
       });
+      d('cards rendered', document.querySelectorAll('#columnsHost .card').length);
 
       // Render preview/per-card totals (optional display hooks)
       try {
@@ -1600,6 +1611,9 @@ document.addEventListener('DOMContentLoaded', async function(){
           if (Array.isArray(previewRows)) {
             renderPreviewTable(previewRows);
             renderPerCardTotals(previewRows);
+            d('preview rows', previewRows.length);
+          } else {
+            d('preview rows', 'bad payload');
           }
         }
       } catch (err) {

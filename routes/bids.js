@@ -9,6 +9,11 @@ import { saveDataUrlToFile } from "../app.js";
 const router = Router();
 const allow = (_req, _res, next) => next(); // TODO: swap to your real auth guard
 
+const SDEBUG = process.env.DEBUG ? process.env.DEBUG.split(",").map((s) => s.trim().toLowerCase()).includes("bids") : true;
+const slog = (...a) => {
+  if (SDEBUG) console.log("[BIDS]", ...a);
+};
+
 const BID_UPLOAD_ROOT = path.join(process.cwd(), "uploads", "bid-docs");
 fs.mkdirSync(BID_UPLOAD_ROOT, { recursive: true });
 
@@ -41,13 +46,13 @@ const TOTALS_SQL = `
 
 const QUOTE_TOTALS_VIEW_SQL = `
   SELECT
-    COALESCE(subtotal, 0)::float       AS subtotal,
-    COALESCE(tax, 0)::float            AS tax,
-    COALESCE(total, 0)::float          AS total,
-    COALESCE(deposit_amount, 0)::float AS deposit_amount,
-    COALESCE(remaining, 0)::float      AS remaining,
-    COALESCE(deposit_pct, 0)::float    AS deposit_pct,
-    COALESCE(tax_rate, 0)::float       AS tax_rate
+    COALESCE(subtotal, subtotal_after, subtotal_after_discount, 0)::float AS subtotal,
+    COALESCE(tax, 0)::float                                              AS tax,
+    COALESCE(total, 0)::float                                            AS total,
+    COALESCE(deposit_amount, 0)::float                                   AS deposit_amount,
+    COALESCE(remaining, remaining_amount, 0)::float                      AS remaining,
+    COALESCE(deposit_pct, 0)::float                                      AS deposit_pct,
+    COALESCE(tax_rate, 0)::float                                         AS tax_rate
   FROM public.bid_quote_totals
   WHERE bid_id = $1
 `;
@@ -232,7 +237,8 @@ async function loadBidModel(bidId) {
   const id = Number(bidId);
   if (!Number.isFinite(id)) return null;
 
-  const [columnsQ, snapshotQ, linesQ] = await Promise.all([
+  const [hasBidColumnId, columnsQ, snapshotQ] = await Promise.all([
+    tableHasColumn("bid_lines", "bid_column_id").catch(() => false),
     pool
       .query(
         `SELECT id, label, room, unit_type, color, units, sort_order
@@ -251,16 +257,19 @@ async function loadBidModel(bidId) {
         [id]
       )
       .catch(() => ({ rows: [] })),
-    pool
-      .query(
-        `SELECT id, description, category, qty_per_unit, unit_price, pricing_method, sort_order
+  ]);
+
+  let linesQ = { rows: [] };
+  try {
+    const selectLines = `SELECT id, description, category, qty_per_unit, unit_price, pricing_method, sort_order,
+            ${hasBidColumnId ? "bid_column_id" : "NULL::int AS bid_column_id"}
            FROM public.bid_lines
           WHERE bid_id = $1
-          ORDER BY sort_order, id`,
-        [id]
-      )
-      .catch(() => ({ rows: [] })),
-  ]);
+          ORDER BY sort_order, id`;
+    linesQ = await pool.query(selectLines, [id]);
+  } catch {
+    linesQ = { rows: [] };
+  }
 
   const snapshotRaw = columnsQ.rows.length || snapshotQ.rows.length ? ensurePlainObject(snapshotQ.rows[0]?.calc_snapshot) : {};
   const projectSnapshot = ensurePlainObject(snapshotRaw.projectSnapshot ?? snapshotRaw.project_snapshot ?? {});
@@ -303,18 +312,26 @@ async function loadBidModel(bidId) {
       unit_price: toNumberOrZero(line.unit_price),
       pricing_method: safeString(line.pricing_method ?? "fixed") || "fixed",
       sort_order: toNumberOrZero(line.sort_order ?? idx),
+      column_id: Number.isFinite(Number(line.bid_column_id)) ? Number(line.bid_column_id) : null,
     }));
   }
 
-  const lines = snapshotLines.map((line, idx) => ({
-    line_id: Number.isFinite(Number(line.line_id ?? line.id)) ? Number(line.line_id ?? line.id) : idx + 1,
-    description: safeString(line.description ?? line.name ?? ""),
-    category: safeString(line.category ?? null, null),
-    qty_per_unit: toNumberOrZero(line.qty_per_unit ?? line.qty ?? line.quantity ?? 0),
-    unit_price: toNumberOrZero(line.unit_price ?? line.price ?? 0),
-    pricing_method: safeString(line.pricing_method ?? line.method ?? "fixed") || "fixed",
-    sort_order: toNumberOrZero(line.sort_order ?? idx),
-  }));
+  const lines = snapshotLines.map((line, idx) => {
+    const rawId = line.id ?? line.line_id;
+    const lineId = Number.isFinite(Number(line.line_id ?? line.id)) ? Number(line.line_id ?? line.id) : idx + 1;
+    const rawColumnId = line.column_id ?? line.bid_column_id ?? line.columnId ?? line.columnID ?? null;
+    return {
+      id: Number.isFinite(Number(rawId)) ? Number(rawId) : lineId,
+      line_id: lineId,
+      description: safeString(line.description ?? line.name ?? ""),
+      category: safeString(line.category ?? null, null),
+      qty_per_unit: toNumberOrZero(line.qty_per_unit ?? line.qty ?? line.quantity ?? 0),
+      unit_price: toNumberOrZero(line.unit_price ?? line.price ?? 0),
+      pricing_method: safeString(line.pricing_method ?? line.method ?? "fixed") || "fixed",
+      sort_order: toNumberOrZero(line.sort_order ?? idx),
+      column_id: Number.isFinite(Number(rawColumnId)) ? Number(rawColumnId) : null,
+    };
+  });
 
   const cardsCount =
     columns.length || toNumberOrZero(snapshotRaw.cards_count ?? projectSnapshot.cards_count ?? projectSnapshot.cards ?? 0);
@@ -516,7 +533,7 @@ async function loadBidTotals(bidId) {
       return mapTotalsRow({ ...viewQ.rows[0], bid_id: id }, "bid_quote_totals");
     }
   } catch (err) {
-    if (err?.code !== "42P01") {
+    if (err?.code !== "42P01" && err?.code !== "42703") {
       console.warn("[loadBidTotals] bid_quote_totals view error:", err.message);
     }
   }
@@ -596,22 +613,24 @@ router.get("/:id/customer-info", requireAuth, async (req, res) => {
     const sql = `
       SELECT
         b.id,
-        COALESCE(b.customer_name, '')       AS customer_name,
-        COALESCE(b.customer_email, '')      AS customer_email,
-        COALESCE(b.project_name, '')        AS project_name,
-        COALESCE(b.builder, '')             AS builder,
-        COALESCE(b.home_address, '')        AS home_address,
-        COALESCE(b.lot_plan_name, '')       AS lot_plan_name,
-        COALESCE(b.sales_person, '')        AS sales_person,
-        COALESCE(b.status, 'draft')         AS status,
-        COALESCE(b.deposit_pct, 0)::float   AS deposit_pct,
-        COALESCE(b.tax_rate, 0)::float      AS tax_rate
+        COALESCE(b.onboarding->>'customer_name', b.onboarding->>'homeowner', '')         AS customer_name,
+        COALESCE(b.customer_email, b.onboarding->>'customer_email', '')                  AS customer_email,
+        COALESCE(b.calc_snapshot->'projectSnapshot'->>'project_name', b.name, '')        AS project_name,
+        COALESCE(b.onboarding->>'builder', '')                                           AS builder,
+        COALESCE(b.onboarding->>'home_address', '')                                      AS home_address,
+        COALESCE(b.onboarding->>'lot_plan', b.onboarding->>'lot_plan_name', '')          AS lot_plan_name,
+        COALESCE(b.sales_person, b.onboarding->>'sales_person', '')                      AS sales_person,
+        COALESCE(b.status, 'draft')                                                      AS status,
+        COALESCE(b.deposit_pct, 0)::float                                                AS deposit_pct,
+        COALESCE(b.tax_rate, 0)::float                                                   AS tax_rate
       FROM public.bids b
       WHERE b.id = $1
     `;
     const { rows } = await pool.query(sql, [id]);
     if (!rows.length) return res.status(404).json({ error: "not-found" });
-    res.json(rows[0]);
+    const payload = rows[0];
+    slog("CUSTOMER-INFO", { id, ok: true });
+    res.json(payload);
   } catch (err) {
     console.error("customer-info error", err);
     res.status(500).json({ error: "customer-info" });
@@ -1301,6 +1320,7 @@ router.get("/:id/model", requireAuth, async (req, res) => {
     if (!model) {
       return res.json({ columns: [], lines: [], cards_count: 0, units_count: 0 });
     }
+    slog("MODEL", { bidId, cols: model.columns?.length || 0, lines: model.lines?.length || 0 });
     res.json({
       columns: model.columns,
       lines: model.lines,
@@ -1323,15 +1343,23 @@ router.get("/:id/preview", requireAuth, async (req, res) => {
     const model = await loadBidModel(bidId);
     if (!model) return res.json([]);
     const preview = [];
+    const lines = Array.isArray(model.lines) ? model.lines : [];
     for (const column of model.columns) {
-      const columnId = column?.column_id;
+      const rawColumnId = column?.column_id;
+      const columnId = Number.isFinite(Number(rawColumnId)) ? Number(rawColumnId) : null;
       const units = toNumberOrZero(column?.units);
-      for (const line of model.lines) {
-        const lineId = line?.line_id;
+      const scopedLines = lines.filter((line) => {
+        const lineColumnId = Number.isFinite(Number(line?.column_id)) ? Number(line.column_id) : null;
+        if (lineColumnId === null) return true;
+        if (columnId === null) return false;
+        return lineColumnId === columnId;
+      });
+
+      for (const line of scopedLines) {
         const qtyTotal = toNumberOrZero(line?.qty_per_unit) * units;
         const lineTotal = toNumberOrZero(line?.unit_price) * qtyTotal;
         preview.push({
-          line_id: lineId,
+          line_id: line?.line_id,
           column_id: columnId,
           qty_total: qtyTotal,
           line_total: lineTotal,
@@ -1339,6 +1367,12 @@ router.get("/:id/preview", requireAuth, async (req, res) => {
         });
       }
     }
+    slog("PREVIEW", {
+      bidId,
+      columns: model.columns?.length || 0,
+      lines: lines.length,
+      preview_rows: preview.length,
+    });
     res.json(preview);
   } catch (e) {
     console.error("[/api/bids/:id/preview]", e);
@@ -1638,6 +1672,7 @@ router.delete("/columns/:columnId", requireAuth, async (req, res) => {
     await client.query(`DELETE FROM public.bid_column_details WHERE column_id=$1`, [columnId]).catch(() => {});
     await client.query(`DELETE FROM public.bid_documents WHERE column_id=$1`, [columnId]).catch(() => {});
     await client.query(`DELETE FROM public.bid_line_cells WHERE bid_column_id=$1`, [columnId]).catch(() => {});
+    await client.query(`DELETE FROM public.bid_lines WHERE bid_column_id=$1`, [columnId]).catch(() => {});
     const del = await client.query(`DELETE FROM public.bid_columns WHERE id=$1`, [columnId]);
     await client.query("COMMIT");
     res.json({ ok: true, deleted: del.rowCount });
@@ -1660,6 +1695,114 @@ router.delete("/lines/:lineId", requireAuth, async (req, res) => {
   } catch (e) {
     console.error("[DELETE /api/bids/lines/:lineId]", e);
     res.status(500).json({ error: "server_error" });
+  }
+});
+
+// POST /api/bids/:id/reset-columns  → clear columns and dependents atomically
+router.post("/:id/reset-columns", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) return res.status(400).json({ error: "invalid_bid_id" });
+
+  const client = await pool.connect();
+  const safeExec = async (sql, params = []) => {
+    try {
+      await client.query(sql, params);
+    } catch (err) {
+      if (err?.code !== "42P01" && err?.code !== "42703") {
+        throw err;
+      }
+    }
+  };
+
+  try {
+    await client.query("BEGIN");
+    await safeExec(`DELETE FROM public.bid_line_cells WHERE bid_id = $1`, [bidId]);
+    await safeExec(`DELETE FROM public.bid_column_details WHERE bid_id = $1`, [bidId]);
+    await safeExec(`DELETE FROM public.bid_documents WHERE bid_id = $1 AND column_id IS NOT NULL`, [bidId]);
+    await safeExec(`DELETE FROM public.bid_lines WHERE bid_id = $1`, [bidId]);
+    await safeExec(`DELETE FROM public.bid_columns WHERE bid_id = $1`, [bidId]);
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("[/api/bids/:id/reset-columns] error", e);
+    res.status(500).json({ error: "server_error", detail: e?.message });
+  } finally {
+    client.release();
+  }
+});
+
+// CREATE a line: POST /api/bids/:id/lines
+router.post("/:id/lines", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) return res.status(400).json({ error: "invalid_bid_id" });
+
+  try {
+    const b = req.body || {};
+    const description = (b.description ?? "").toString();
+    const category = b.category ?? null;
+    const unit_of_measure = b.unit_of_measure ?? "ea";
+    const qty_per_unit = Number(b.qty_per_unit ?? 0);
+    const unit_cost = Number.isFinite(+b.unit_cost) ? +b.unit_cost : null;
+    const unit_price = Number(b.unit_price ?? 0);
+    const pricing_method = b.pricing_method ?? "fixed";
+    const sort_order = Number.isFinite(+b.sort_order) ? +b.sort_order : 0;
+    const bid_column_id = Number.isFinite(+b.bid_column_id) ? +b.bid_column_id : null;
+
+    const columns = await getTableColumns("bid_lines");
+
+    const fields = [];
+    const placeholders = [];
+    const values = [];
+
+    const push = (name, value, { force = false, raw = false } = {}) => {
+      const hasColumn = columns.includes(name);
+      if (!force && !hasColumn) return;
+      fields.push(name);
+      if (raw) {
+        placeholders.push(value);
+        return;
+      }
+      values.push(value);
+      placeholders.push(`$${values.length}`);
+    };
+
+    push("bid_id", bidId, { force: true });
+    push("description", description);
+    push("category", category);
+    push("unit_of_measure", unit_of_measure);
+    push("qty_per_unit", qty_per_unit);
+    push("unit_cost", unit_cost);
+    push("unit_price", unit_price);
+    push("pricing_method", pricing_method);
+    push("sort_order", sort_order);
+    push("bid_column_id", bid_column_id);
+    if (columns.includes("updated_at")) push("updated_at", "now()", { raw: true });
+    if (columns.includes("created_at")) push("created_at", "now()", { raw: true });
+
+    const returning = ["id", "bid_id"];
+    [
+      "description",
+      "category",
+      "unit_of_measure",
+      "qty_per_unit",
+      "unit_cost",
+      "unit_price",
+      "pricing_method",
+      "sort_order",
+      "bid_column_id",
+    ].forEach((name) => {
+      if (columns.includes(name)) returning.push(name);
+    });
+
+    const sql = `INSERT INTO public.bid_lines (${fields.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING ${returning.join(", ")}`;
+    const { rows } = await pool.query(sql, values);
+    const result = rows[0];
+    slog("LINE INSERT", { bidId, in: b, out: result });
+    res.json(result);
+  } catch (e) {
+    console.error("[POST /api/bids/:id/lines] error", e);
+    res.status(500).json({ error: "server_error", detail: e?.message });
   }
 });
 

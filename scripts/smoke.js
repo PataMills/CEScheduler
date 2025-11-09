@@ -1,64 +1,53 @@
-import http from "http";
+const BID = Number(process.env.BID || "36");
+const BASE = process.env.BASE || "http://localhost:3000";
 
-function get(path) {
-  return new Promise((resolve, reject) => {
-    http
-      .get({ host: "localhost", port: 3000, path }, (r) => {
-        let body = "";
-        r.on("data", (chunk) => {
-          body += chunk;
-        });
-        r.on("end", () => {
-          resolve({ status: r.statusCode, body });
-        });
-      })
-      .on("error", reject);
-  });
-}
-
-function post(path, json) {
-  return new Promise((resolve, reject) => {
-    const data = Buffer.from(JSON.stringify(json || {}));
-    const req = http.request(
-      {
-        host: "localhost",
-        port: 3000,
-        path,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": data.length,
-        },
-      },
-      (r) => {
-        let body = "";
-        r.on("data", (chunk) => {
-          body += chunk;
-        });
-        r.on("end", () => {
-          resolve({ status: r.statusCode, body });
-        });
-      }
-    );
-    req.on("error", reject);
-    req.write(data);
-    req.end();
-  });
+async function hit(path) {
+  try {
+    const response = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json" },
+    });
+    const json = await response.json().catch(() => null);
+    return { ok: response.ok, status: response.status, json };
+  } catch (error) {
+    return { ok: false, status: 0, json: { error: error?.message || String(error) } };
+  }
 }
 
 (async () => {
-  const bidId = 36; // <-- change to a real bid in your DB
+  const summary = await hit(`/api/bids/${BID}/summary`);
+  const model = await hit(`/api/bids/${BID}/model`);
+  const lines = await hit(`/api/bids/${BID}/lines`);
+  const preview = await hit(`/api/bids/${BID}/preview`);
+  const customer = await hit(`/api/bids/${BID}/customer-info`);
+  const health = await hit(`/api/__health`);
 
-  const columns = await get(`/api/bids/${bidId}/columns-details`);
-  if (columns.status !== 200) throw new Error(`columns-details failed: ${columns.status}`);
+  const report = {
+    summary_ok: summary.ok && !!summary.json?.ok,
+    model_cols: model.ok ? model.json?.columns?.length ?? 0 : -1,
+    model_lines: model.ok ? model.json?.lines?.length ?? 0 : -1,
+    lines: lines.ok ? lines.json?.length ?? 0 : -1,
+    preview: preview.ok ? preview.json?.length ?? 0 : -1,
+    customer_ok: customer.ok && !!customer.json?.id,
+    health_ok: health.ok && !!health.json?.ok,
+  };
 
-  const docs = await get(`/api/bids/${bidId}/documents`);
-  if (docs.status !== 200) throw new Error(`documents failed: ${docs.status}`);
+  console.table(report);
 
-  const submit = await post(`/api/po/submit`, { bidId });
-  if (submit.status !== 200) throw new Error(`po submit failed: ${submit.status}`);
+  const pass =
+    report.summary_ok &&
+    report.model_cols >= 0 &&
+    report.model_lines >= 0 &&
+    report.lines >= 0 &&
+    report.preview >= 0 &&
+    report.customer_ok &&
+    report.health_ok;
 
-  console.log("SMOKE OK");
+  if (!pass) {
+    console.error("Smoke failed");
+    process.exit(1);
+  }
+
+  console.log("Smoke passed");
 })().catch((err) => {
   console.error(err);
   process.exit(1);

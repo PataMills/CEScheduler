@@ -71,6 +71,7 @@ import tasksSearchRoutes from "./routes/tasksSearch.js";
 import { slack, SLACK_CHANNEL, PUBLIC_BASE_URL } from "./slack.js";
 import autoTasksRouter from "./routes/autoTasks.js";
 import registerTeamTaskApi from "./routes/teamTaskApi.js";
+import registerHealth from "./routes/health.js";
 import { pool, query } from "./db.js";
 
 // --- init app FIRST ---
@@ -124,6 +125,7 @@ app.get("/api/health/db", async (req, res) => {
 });
 
 registerPurchasing(app);
+registerHealth(app);
 
 app.get('/qbo/check', async (_req, res) => {
   try {
