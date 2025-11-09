@@ -532,7 +532,9 @@ async function saveDraftCore(){
         
         // Delete all existing lines first (foreign key constraint)
         for (const line of existingLines) {
-          await fetch('/api/bids/lines/' + line.id, { method: 'DELETE' }).catch(()=>{});
+          const delId = Number(line.line_id ?? line.id);
+          if (!Number.isFinite(delId)) continue;
+          await fetch('/api/bids/lines/' + delId, { method: 'DELETE' }).catch(() => {});
         }
         // Then delete all existing columns
         for (const col of existingCols) {

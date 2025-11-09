@@ -1602,4 +1602,65 @@ router.delete("/lead-times/:manufacturer", requireAuth, requireAdminOrPurchasing
   }
 });
 
+// =============== COLUMN / LINE MANAGEMENT ===============
+
+// POST /api/bids/:id/columns  → create new column
+router.post("/:id/columns", requireAuth, async (req, res) => {
+  const bidId = Number(req.params.id);
+  if (!Number.isFinite(bidId)) return res.status(400).json({ error: "invalid_bid_id" });
+
+  try {
+    const { label, room = null, unit_type = null, color = null, units = 0, sort_order = 0, notes = null } = req.body || {};
+
+    const { rows } = await pool.query(
+      `INSERT INTO public.bid_columns (bid_id, label, room, unit_type, color, units, sort_order, notes, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+       RETURNING id, bid_id, label, units, sort_order`,
+      [bidId, label || "Column", room, unit_type, color, units, sort_order, notes]
+    );
+
+    res.json(rows[0]);
+  } catch (e) {
+    console.error("[POST /api/bids/:id/columns]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// DELETE /api/bids/columns/:columnId  → remove column + linked rows
+router.delete("/columns/:columnId", requireAuth, async (req, res) => {
+  const columnId = Number(req.params.columnId);
+  if (!Number.isFinite(columnId)) return res.status(400).json({ error: "invalid_column_id" });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // remove dependent rows first (ignore if tables missing)
+    await client.query(`DELETE FROM public.bid_column_details WHERE column_id=$1`, [columnId]).catch(() => {});
+    await client.query(`DELETE FROM public.bid_documents WHERE column_id=$1`, [columnId]).catch(() => {});
+    await client.query(`DELETE FROM public.bid_line_cells WHERE bid_column_id=$1`, [columnId]).catch(() => {});
+    const del = await client.query(`DELETE FROM public.bid_columns WHERE id=$1`, [columnId]);
+    await client.query("COMMIT");
+    res.json({ ok: true, deleted: del.rowCount });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    console.error("[DELETE /api/bids/columns/:columnId]", e);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+// DELETE /api/bids/lines/:lineId  → remove individual line
+router.delete("/lines/:lineId", requireAuth, async (req, res) => {
+  const lineId = Number(req.params.lineId);
+  if (!Number.isFinite(lineId)) return res.status(400).json({ error: "invalid_line_id" });
+  try {
+    const del = await pool.query(`DELETE FROM public.bid_lines WHERE id=$1`, [lineId]);
+    res.json({ ok: true, deleted: del.rowCount });
+  } catch (e) {
+    console.error("[DELETE /api/bids/lines/:lineId]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
 export default router;
