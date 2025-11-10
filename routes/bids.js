@@ -1754,15 +1754,19 @@ router.post("/:id/reset-columns", requireAuth, async (req, res) => {
   try {
     await withTx(async (client) => {
       const exec = async (sql, params = []) => {
+        await client.query('SAVEPOINT sp');
         try {
           await client.query(sql, params);
+          await client.query('RELEASE SAVEPOINT sp');
         } catch (err) {
-          if (err?.code === "42P01" || err?.code === "42703") {
-            // missing table/column: ignore for idempotency
+          if (err?.code === '42P01' || err?.code === '42703') {
+            // missing table/column: rollback this statement only and continue
+            await client.query('ROLLBACK TO SAVEPOINT sp');
             return;
           }
-          console.error("[reset-columns] root SQL error", err);
-          throw err; // rethrow so tx rolls back
+          await client.query('ROLLBACK TO SAVEPOINT sp');
+          console.error('[reset-columns] root SQL error', err);
+          throw err; // abort whole tx
         }
       };
       await exec(`DELETE FROM public.bid_line_cells WHERE bid_id = $1`, [bidId]);
