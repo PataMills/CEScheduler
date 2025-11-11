@@ -122,6 +122,20 @@ async function handleSubmitToPurchasing(req, res) {
       console.warn('[po-submit] bid_events insert skipped:', eventErr.message);
     }
 
+    // Advance bid stage to 'submitted' and stamp submitted_at (once)
+    try {
+      await client.query(
+        `UPDATE public.bids
+            SET stage = 'submitted',
+                submitted_at = COALESCE(submitted_at, now()),
+                updated_at = now()
+          WHERE id = $1`,
+        [bidId]
+      );
+    } catch (updErr) {
+      console.warn('[po-submit] bids stage update skipped:', updErr.message);
+    }
+
     await client.query('COMMIT');
     res.json({
       ok: true,

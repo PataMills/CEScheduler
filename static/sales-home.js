@@ -18,35 +18,49 @@
   // ---- Sidebar: my recent
   async function loadMyRecent() {
     try {
-      const me = await fetch('/api/me',{cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null);
-      const sp = me?.name ? ('&sp='+encodeURIComponent(me.name)) : '';
-      const r  = await fetch('/api/bids/recent?limit=10'+sp,{cache:'no-store'});
-      const rows = r.ok ? await r.json() : [];
+        // Use new dedicated recent submissions endpoint
+        const r = await fetch('/api/sales/home/recent?limit=8', {cache:'no-store'});
+        const rows = r.ok ? await r.json() : [];
       const host = document.querySelector('#recentSidebar'); if (!host) return;
       host.innerHTML = '';
 
       rows.forEach(b => {
         const div = document.createElement('div');
         div.className = 'sideItem';
+        const stage = b.stage || b.status || 'draft';
+        const orderNo = b.order_no ? `<span class="muted" style="font-size:11px">Order: ${b.order_no}</span>` : '';
+        
         div.innerHTML = `
           <div style="display:flex;gap:8px;align-items:center;flex:1;justify-content:space-between">
-            <a href="/sales-quote?bid=${b.id}">${b.name || ('Bid #'+b.id)}</a>
+            <a href="/sales-quote?bid=${b.id}">${b.customer_name || ('Bid #'+b.id)}</a>
             <span class="badge">${Number(b.total||0).toLocaleString('en-US',{style:'currency',currency:'USD'})}</span>
           </div>
-          <div style="display:flex;gap:6px">
+          ${orderNo}
+          <div class="muted" style="font-size:11px">${stage}</div>
+          <div style="display:flex;gap:6px;margin-top:4px">
             <button class="btn btn-view" data-bid="${b.id}">View</button>
             <button class="btn btn-edit" data-bid="${b.id}">Edit</button>
           </div>
         `;
-        // wire
+        // wire - route based on stage
         div.querySelector('.btn-view').onclick = e => {
-          const bid = e.currentTarget.dataset.bid; location.href = '/sales-quote?bid='+bid;
+          const bid = e.currentTarget.dataset.bid;
+          if (stage === 'draft' || stage === 'in_progress' || stage === 'intake') {
+            location.href = '/sales-intake?bid='+bid;
+          } else if (stage === 'ready_for_schedule' || b.status === 'ready_for_schedule') {
+            location.href = '/sales-review?bid='+bid;
+          } else {
+            location.href = '/sales-details?bid='+bid;
+          }
         };
         div.querySelector('.btn-edit').onclick = e => {
           const bid = e.currentTarget.dataset.bid; location.href = '/sales-intake?bid='+bid;
         };
         host.appendChild(div);
       });
+        if (!rows.length) {
+          host.innerHTML = '<div class="muted">No recent submissions yet.</div>';
+        }
     } catch {}
   }
 
@@ -71,40 +85,40 @@
 
   async function loadStatusCounters() {
     try {
-      const me = await fetch('/api/me', {cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null);
-      const sp = me?.name ? ('&sp=' + encodeURIComponent(me.name)) : '';
-      const r = await fetch('/api/bids/recent?limit=200' + sp, { cache: 'no-store' });
-      const rows = r.ok ? await r.json() : [];
-
-        // derive counts (store arrays for click handlers)
-        const awaitingList = rows.filter(b => {
-          const s = String(b.status||'').toLowerCase();
-          return s !== 'accepted' && s !== 'complete' && s !== 'scheduled';
-        });
-        const depositList = rows.filter(b => String(b.status||'').toLowerCase()==='accepted' && !b.deposit_received_at);
-        const readyList = rows.filter(b => !!b.ready_for_schedule);
+      // Use new dedicated stats endpoint
+      const r = await fetch('/api/sales/home/stats', { cache: 'no-store' });
+      const stats = r.ok ? await r.json() : { awaiting_acceptance: 0, awaiting_deposit: 0, ready: 0 };
 
       // update UI
       const A = document.getElementById('statAwaiting');
       const D = document.getElementById('statDeposit');
       const R = document.getElementById('statReady');
-        if (A) A.textContent = awaitingList.length;
-        if (D) D.textContent = depositList.length;
-        if (R) R.textContent = readyList.length;
+      if (A) A.textContent = stats.awaiting_acceptance || 0;
+      if (D) D.textContent = stats.awaiting_deposit || 0;
+      if (R) R.textContent = stats.ready || 0;
 
-        // Make tiles clickable to show filtered lists
-        document.getElementById('tileAwaiting')?.addEventListener('click', (e)=>{ 
-          e.preventDefault(); 
-          showFilteredList(awaitingList, 'Awaiting Acceptance');
+      // Make tiles clickable to show filtered lists (fetch on click for details)
+      document.getElementById('tileAwaiting')?.addEventListener('click', async (e) => { 
+        e.preventDefault();
+        const bids = await fetch('/api/sales/home/recent?limit=200').then(r=>r.ok?r.json():[]);
+        const filtered = bids.filter(b => {
+          const st = String(b.stage||'').toLowerCase();
+          return (st === 'quoted' || st === 'submitted') && !b.ready_for_schedule;
         });
-        document.getElementById('tileDeposit')?.addEventListener('click', (e)=>{ 
-          e.preventDefault(); 
-          showFilteredList(depositList, 'Awaiting Deposit');
-        });
-        document.getElementById('tileReady')?.addEventListener('click', (e)=>{ 
-          e.preventDefault(); 
-          showFilteredList(readyList, 'Ready to Schedule');
-        });
+        showFilteredList(filtered, 'Awaiting Acceptance');
+      });
+      document.getElementById('tileDeposit')?.addEventListener('click', async (e) => { 
+        e.preventDefault();
+        const bids = await fetch('/api/sales/home/recent?limit=200').then(r=>r.ok?r.json():[]);
+        const filtered = bids.filter(b => b.stage === 'accepted' && !b.deposit_received_at);
+        showFilteredList(filtered, 'Awaiting Deposit');
+      });
+      document.getElementById('tileReady')?.addEventListener('click', async (e) => { 
+        e.preventDefault();
+        const bids = await fetch('/api/sales/home/recent?limit=200').then(r=>r.ok?r.json():[]);
+        const filtered = bids.filter(b => !!b.ready_for_schedule);
+        showFilteredList(filtered, 'Ready to Schedule');
+      });
     } catch {}
   }
 
@@ -113,20 +127,31 @@
       if (!tbody) return;
       tbody.innerHTML = '';
       bids.forEach(row => {
+        const stage = row.stage || row.status || '';
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${row.id||''}</td>
-          <td>${row.name||''}</td>
-          <td>${row.sales_person||''}</td>
+          <td>${row.customer_name||''}</td>
+          <td>${row.order_no||'—'}</td>
           <td>${Number(row.total||0).toLocaleString('en-US',{style:'currency',currency:'USD'})}</td>
-          <td class="status">${row.status||''}</td>
-          <td>${row.created_at ? new Date(row.created_at).toLocaleDateString() : ''}</td>
+          <td class="status">${stage}</td>
+          <td>${row.updated_at ? new Date(row.updated_at).toLocaleDateString() : ''}</td>
           <td>
-            <button class="btn-view" data-bid="${row.id}">View</button>
+            <button class="btn-view" data-bid="${row.id}" data-stage="${stage}">View</button>
             <button class="btn-edit" data-bid="${row.id}">Edit</button>
           </td>
         `;
-        tr.querySelector('.btn-view').onclick = (e)=>{ const bid=e.currentTarget.dataset.bid; location.href='/sales-quote?bid='+bid; };
+        tr.querySelector('.btn-view').onclick = (e)=>{
+          const bid = e.currentTarget.dataset.bid;
+          const st = e.currentTarget.dataset.stage;
+          if (st === 'draft' || st === 'in_progress' || st === 'intake') {
+            location.href = '/sales-intake?bid='+bid;
+          } else if (st === 'ready_for_schedule') {
+            location.href = '/sales-review?bid='+bid;
+          } else {
+            location.href = '/sales-details?bid='+bid;
+          }
+        };
         tr.querySelector('.btn-edit').onclick = (e)=>{ const bid=e.currentTarget.dataset.bid; location.href='/sales-intake?bid='+bid; };
         tbody.appendChild(tr);
       });
@@ -151,36 +176,27 @@
       host.appendChild(cell);
     });
 
-    // fetch scheduled tasks for each day
-    // (we call /api/schedule?date=YYYY-MM-DD for each day and merge)
-    const results = [];
-    for (const d of days) {
-      const r = await fetch('/api/schedule?date='+ymd(d)).then(x=>x.ok?x.json():[]).catch(()=>[]);
-      results.push(...r);
-    }
-
-    // filter by salesperson for "mine"
-    const filtered = results.filter(t => {
-      if (filter==='scheduled') return true;
-      if (filter==='projects')  return true; // you can swap to project-level list later
-      if (!myName) return true;
-      // if jobs table has salesperson, you can enrich; for now match if task name or customer hints contain it
-      return true; // keep all until we add a salesperson join
-    });
+    // Use new calendar endpoint
+    const start = ymd(days[0]);
+    const end = ymd(days[6]);
+    const r = await fetch(`/api/sales/home/calendar?start=${start}&end=${end}&filter=${filter}`).catch(()=>({ok:false}));
+    const results = r.ok ? await r.json() : [];
 
     // paint items
-    filtered.forEach(t => {
-      const dayIdx = Math.max(0, Math.min(6, Math.round((new Date(t.window_start) - weekStart) / 86400000)));
+    results.forEach(t => {
+      const taskDate = t.date; // YYYY-MM-DD from server
+      const dayIdx = days.findIndex(d => ymd(d) === taskDate);
+      if (dayIdx === -1) return;
+      
       const cell = host.children[dayIdx]; if (!cell) return;
       const div = document.createElement('div');
-      div.className = 'pill '+typeColor(t.type);
-      div.title = (t.customer_name || t.job_id || '') + ' • ' + (t.name || t.type);
-      const labelType = String(t.type||'').toLowerCase() === 'install' ? 'Install' : (t.name || t.type || '');
-        const cust = shortName(t.customer_name || t.job_id || '');
-        const ccTxt = (t.units_total != null) ? ' (CC: ' + t.units_total + ')' : '';
-        div.textContent = (labelType === 'Install')
-          ? `Install — ${cust}${ccTxt}`
-          : (labelType || '').slice(0,26);
+      div.className = 'pill '+typeColor(t.kind);
+      div.title = (t.customer_name || t.title || '') + ' • ' + (t.kind || '');
+      const labelType = String(t.kind||'').toLowerCase() === 'install' ? 'Install' : (t.title || t.kind || '');
+      const cust = shortName(t.customer_name || '');
+      div.textContent = (labelType === 'Install')
+        ? `Install — ${cust}`
+        : (labelType || '').slice(0,26);
       cell.querySelector('.dayBody').appendChild(div);
     });
   }
@@ -189,31 +205,41 @@
   $('#calNext')?.addEventListener('click', ()=>{ weekStart.setDate(weekStart.getDate()+7); loadCalendar(); });
   $('#calFilter')?.addEventListener('change', loadCalendar);
 
-  // ---- Search (keep your existing)
+  // ---- Search (use new dedicated search endpoint)
   async function doSearch() {
     const q = ($('#q').value || '').trim();
     if (!q) { $('#results').style.display='none'; return; }
     try {
-      const r = await fetch('/api/search?q=' + encodeURIComponent(q));
-      const data = r.ok ? await r.json() : { results: [] };
-      const list = Array.isArray(data.results) ? data.results : [];
+      const r = await fetch('/api/bids/search?q=' + encodeURIComponent(q));
+      const list = r.ok ? await r.json() : [];
       const tbody = $('#results tbody');
       tbody.innerHTML = '';
       list.forEach(row => {
+        const stage = row.stage || row.status || '';
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${row.id||''}</td>
-          <td>${row.customer_name||row.name||''}</td>
-          <td>${row.builder||row.sales_person||''}</td>
+          <td>${row.customer_name||''}</td>
+          <td>${row.order_no||'—'}</td>
           <td>${Number(row.total||0).toLocaleString('en-US',{style:'currency',currency:'USD'})}</td>
-          <td class="status">${row.status||''}</td>
+          <td class="status">${stage}</td>
           <td>${row.updated_at ? new Date(row.updated_at).toLocaleString() : ''}</td>
           <td>
-            <button class="btn-view" data-bid="${row.id}">View</button>
+            <button class="btn-view" data-bid="${row.id}" data-stage="${stage}">View</button>
             <button class="btn-edit" data-bid="${row.id}">Edit</button>
           </td>
         `;
-        tr.querySelector('.btn-view').onclick = (e)=>{ const bid=e.currentTarget.dataset.bid; location.href='/sales-quote?bid='+bid; };
+        tr.querySelector('.btn-view').onclick = (e)=>{
+          const bid = e.currentTarget.dataset.bid;
+          const st = e.currentTarget.dataset.stage;
+          if (st === 'draft' || st === 'in_progress' || st === 'intake') {
+            location.href = '/sales-intake?bid='+bid;
+          } else if (st === 'ready_for_schedule') {
+            location.href = '/sales-review?bid='+bid;
+          } else {
+            location.href = '/sales-details?bid='+bid;
+          }
+        };
         tr.querySelector('.btn-edit').onclick = (e)=>{ const bid=e.currentTarget.dataset.bid; location.href='/sales-intake?bid='+bid; };
         tbody.appendChild(tr);
       });

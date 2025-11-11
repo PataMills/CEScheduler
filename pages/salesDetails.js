@@ -92,7 +92,7 @@ export default function registerSalesDetails(app){
       </div>
     </div>
     <div class="grid g2" style="gap:8px">
-      <div><label>Order Number</label><input id="info_order_no"/></div>
+      <div><label>Order Number</label><input id="info_order_no" readonly/></div>
       <div><label>Install Date</label><input id="info_install_date" type="date"/></div>
     </div>
 
@@ -320,7 +320,7 @@ async function loadBidDetails(){
   function set(sel,val){ const e=document.querySelector(sel); if(!e) return; e.value = val == null ? '' : String(val); }
   function setSel(sel,val){ const el=document.querySelector(sel); if(!el) return; if(val==null){ return; } const str=String(val); if(Array.from(el.options).some(opt=>opt.value===str)){ el.value=str; } else { el.value=str; } }
 
-  set('#info_order_no', ob.order_no);
+  set('#info_order_no', ob.order_no || 'Pending');
   set('#info_notes', ob.notes);
   set('#info_specific_notes', ob.specific_notes);
 

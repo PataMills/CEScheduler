@@ -1,8 +1,153 @@
 // routes/sales.js
 import express from "express";
 import { pool } from "../db.js"; // update if your db helper has a different path/name
+import { requireAuth } from "./auth.js";
 
 const router = express.Router();
+
+/* ---------------------- SALES HOME: STATS --------------------- */
+// GET /api/sales/home/stats
+router.get("/api/sales/home/stats", requireAuth, async (req, res) => {
+  try {
+    const me = req.user;
+    const salesPerson = me.name || '';
+
+    const { rows: a } = await pool.query(`
+      SELECT count(*)::int AS n
+      FROM bids
+      WHERE COALESCE(sales_person,'') = $1
+        AND stage IN ('quoted','submitted')
+        AND COALESCE(ready_for_schedule, false) = false
+    `, [salesPerson]);
+
+    const { rows: d } = await pool.query(`
+      SELECT count(*)::int AS n
+      FROM bids
+      WHERE COALESCE(sales_person,'') = $1
+        AND stage = 'accepted'
+        AND deposit_received_at IS NULL
+    `, [salesPerson]);
+
+    const { rows: r } = await pool.query(`
+      SELECT count(*)::int AS n
+      FROM bids
+      WHERE COALESCE(sales_person,'') = $1
+        AND ready_for_schedule = true
+    `, [salesPerson]);
+
+    res.json({
+      awaiting_acceptance: a[0]?.n || 0,
+      awaiting_deposit: d[0]?.n || 0,
+      ready: r[0]?.n || 0
+    });
+  } catch (e) {
+    console.error("[GET /api/sales/home/stats]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------------------- SALES HOME: RECENT -------------------- */
+// GET /api/sales/home/recent
+router.get("/api/sales/home/recent", requireAuth, async (req, res) => {
+  try {
+    const me = req.user;
+    const salesPerson = me.name || '';
+    const limit = Math.max(1, Math.min(20, Number(req.query.limit) || 8));
+    const { rows } = await pool.query(`
+      SELECT id, customer_name, sales_person, stage, status, order_no, total,
+             submitted_at, updated_at, created_at
+        FROM bids
+       WHERE COALESCE(sales_person,'') = $1
+         AND COALESCE(submitted_at, updated_at, created_at) >= now() - interval '30 days'
+       ORDER BY COALESCE(submitted_at, updated_at, created_at) DESC
+       LIMIT $2`, [salesPerson, limit]);
+
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/sales/home/recent]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------------------- SALES HOME: CALENDAR ------------------ */
+// GET /api/sales/home/calendar
+router.get("/api/sales/home/calendar", requireAuth, async (req, res) => {
+  try {
+    const me = req.user;
+    const salesPerson = me.name || '';
+    const start = req.query.start || new Date().toISOString().split('T')[0];
+    const end = req.query.end || new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+    const filter = req.query.filter || 'mine';
+
+    let sql = '';
+    const params = [salesPerson, start, end];
+
+    if (filter === 'mine') {
+      sql = `
+        SELECT
+          DATE(t.window_start AT TIME ZONE 'America/Denver') AS date,
+          t.name AS title,
+          t.type AS kind,
+          t.id AS task_id,
+          b.id AS bid_id,
+          b.customer_name
+        FROM install_tasks t
+        LEFT JOIN bids b ON b.job_id = t.job_id
+        WHERE COALESCE(b.sales_person,'') = $1
+          AND DATE(t.window_start AT TIME ZONE 'America/Denver') BETWEEN $2::date AND $3::date
+        ORDER BY t.window_start
+        LIMIT 50
+      `;
+    } else {
+      sql = `
+        SELECT
+          DATE(t.window_start AT TIME ZONE 'America/Denver') AS date,
+          t.name AS title,
+          t.type AS kind,
+          t.id AS task_id
+        FROM install_tasks t
+        WHERE DATE(t.window_start AT TIME ZONE 'America/Denver') BETWEEN $2::date AND $3::date
+        ORDER BY t.window_start
+        LIMIT 50
+      `;
+    }
+
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/sales/home/calendar]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------------------- BIDS SEARCH --------------------------- */
+// GET /api/bids/search
+router.get("/api/bids/search", requireAuth, async (req, res) => {
+  try {
+    const q = `%${(req.query.q || '').toLowerCase()}%`;
+    const { rows } = await pool.query(`
+      SELECT
+        id,
+        customer_name,
+        stage,
+        status,
+        total,
+        updated_at,
+        order_no
+      FROM bids
+      WHERE LOWER(COALESCE(customer_name,'')) LIKE $1
+         OR CAST(id AS TEXT) LIKE $1
+         OR LOWER(COALESCE(stage,'')) LIKE $1
+         OR LOWER(COALESCE(status,'')) LIKE $1
+      ORDER BY updated_at DESC
+      LIMIT 50
+    `, [q]);
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/bids/search]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 /* ---------------------- SALES: LIST JOBS ---------------------- */
 // GET /api/sales/jobs
@@ -187,8 +332,16 @@ router.post("/api/bids/:id/docs", async (req, res) => {
 router.post("/api/bids/:id/ready-for-schedule", async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query(`UPDATE bids SET status='ready_for_schedule' WHERE id=$1`, [id]);
-    res.json({ ok: true });
+    await pool.query(`
+      UPDATE bids
+      SET ready_for_schedule = true,
+          order_no = COALESCE(order_no, 'CE-' || nextval('order_number_seq')::text),
+          stage = 'ready',
+          updated_at = now()
+      WHERE id = $1
+    `, [id]);
+    const { rows: [r] } = await pool.query(`SELECT order_no FROM bids WHERE id=$1`, [id]);
+    res.json({ ok: true, order_no: r.order_no });
   } catch (e) {
     console.error("[POST /api/bids/:id/ready-for-schedule]", e);
     res.status(500).json({ error: e.message });

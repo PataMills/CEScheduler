@@ -43,6 +43,7 @@ router.get("/__ping", (_req, res) => {
 
 const DETAILS_SQL = `
   SELECT id, job_id, builder_id, name, status, notes,
+    order_no,
          sales_person, onboarding, doc_links, calc_snapshot,
          subtotal_after_discount, tax_rate, tax_rate_pct,
          tax_amount, cc_fee_pct, cc_fee_amount, total, total_amount,
@@ -491,7 +492,7 @@ function shapeBidDetails(row) {
   const homeowner = onboarding.customer_name ?? onboarding.homeowner ?? null;
   const customerPhone = onboarding.customer_phone ?? onboarding.phone ?? null;
   const homeAddress = onboarding.home_address ?? onboarding.address ?? null;
-  const orderNo = onboarding.order_number ?? onboarding.order_no ?? null;
+  const orderNo = row.order_no ?? onboarding.order_number ?? onboarding.order_no ?? null;
 
   return {
     id: row.id,

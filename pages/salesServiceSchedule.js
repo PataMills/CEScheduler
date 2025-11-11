@@ -208,26 +208,54 @@ let _checkAvailTimer = null;
 let _lastCheckedParams = null;
 
 function showAvailability(data){
-      if (data.alternatives && data.alternatives.length) {
-        html += '<div style="margin-top:8px;color:#38bdf8">Suggested alternative times:</div><ul>';
-        for (var i=0; i<data.alternatives.length; ++i) {
-          var a = data.alternatives[i];
-          html += '<li>' + a.date + ' at ' + a.start + ' (' + a.type + ')</li>';
-        }
-        html += '</ul>';
-      }
-      box.innerHTML = html;
-      box.style.display = 'block';
+  const box = $('altTimes');
+  if (!box) return;
+
+  // normalize payload
+  const days = Array.isArray(data.days) ? data.days : [];
+
+  // summary/status text
+  $('availStatus').textContent = days.length
+    ? 'Availability loaded.'
+    : 'No availability for the selected time.';
+
+  // table of days + slot counts
+  let html = '<table style="width:100%;border-collapse:collapse;margin-top:8px">'
+           + '<tr><th style="text-align:left;padding:6px 4px">Date</th>'
+           + '<th style="text-align:left;padding:6px 4px">Available Slots</th>'
+           + '<th style="text-align:left;padding:6px 4px">Tasks</th></tr>';
+
+  for (var i = 0; i < days.length; i++) {
+    var day = days[i];
+    html += '<tr>'
+         +  '<td style="padding:6px 4px">' + (day.date || '—') + '</td>'
+         +  '<td style="padding:6px 4px">';
+    if (day.available_slots && day.available_slots.length) {
+      html += day.available_slots.join(', ');
     } else {
-      box.innerHTML = '<div style="padding:10px;color:#eab308">No availability found for the selected time.</div>';
-      box.style.display = 'block';
+      html += '<span style="color:#eab308">No slots</span>';
     }
-  } catch (error) {
-    console.error('Error checking availability:', error);
-    $('availStatus').textContent = 'Error checking availability.';
-  } finally {
-    $('checkAvailBtn').disabled = false;
+    html +=   '</td>'
+         +    '<td style="padding:6px 4px">' + (day.task_count || 0) + '</td>'
+         +  '</tr>';
   }
+  html += '</table>';
+
+  // optional: suggested alternatives
+  if (Array.isArray(data.alternatives) && data.alternatives.length) {
+    html += '<div style="margin-top:8px;color:#38bdf8">Suggested alternative times:</div><ul>';
+    for (var j = 0; j < data.alternatives.length; j++) {
+      var a = data.alternatives[j];
+      html += '<li>' + (a.date || '') + ' at ' + (a.start || '') + (a.type ? ' (' + a.type + ')' : '') + '</li>';
+    }
+    html += '</ul>';
+  }
+
+  box.innerHTML = html;
+  box.style.display = 'block';
+
+  // render the calendar tiles using the same days array
+  renderCalendar(days);
 }
 
 $('checkAvailBtn').addEventListener('click', async () => {
@@ -238,49 +266,37 @@ $('checkAvailBtn').addEventListener('click', async () => {
     rid: $('rid').value,
   };
 
-  // Basic client-side validation
   if (!params.date || !params.start || !params.duration) {
     $('availStatus').textContent = 'Please fill in all required fields for availability check.';
     return;
   }
 
+  $('checkAvailBtn').disabled = true;
   $('availStatus').textContent = 'Checking availability...';
-  clearTimeout(_checkAvailTimer);
-  _checkAvailTimer = setTimeout(async () => {
-    _lastCheckedParams = params;
-    try {
-      const r = await fetch('/api/sales/check-availability', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      });
-      if (!r.ok) throw new Error('Network response was not ok');
-      const data = await r.json();
-      if (!data.success) throw new Error(data.message || 'Unknown error');
-      
-      // --- render availability results ---
-      const box = $('altTimes');
-      var html = '<table style="width:100%;border-collapse:collapse;margin-top:8px"><tr><th>Date</th><th>Available Slots</th><th>Tasks</th></tr>';
-      for (var i=0; i<days.length; ++i) {
-        var day = days[i];
-        html += '<tr><td>' + day.date + '</td><td>';
-        if (day.available_slots && day.available_slots.length) {
-          html += day.available_slots.join(', ');
-        } else {
-          html += '<span style="color:#eab308">No slots</span>';
-        }
-        html += '</td><td>' + day.task_count + '</td></tr>';
-      }
-      html += '</table>';
-      box.innerHTML = html;
-      box.style.display = 'block';
-    } catch (error) {
-      console.error('Error checking availability:', error);
-      $('availStatus').textContent = 'Error checking availability.';
-    } finally {
-      $('checkAvailBtn').disabled = false;
+
+  try {
+    const r = await fetch('/api/sales/check-availability', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (!data || data.success === false) {
+      throw new Error((data && data.message) || 'No availability data.');
     }
-  }, 300);
+
+    // Use the fixed renderer
+    showAvailability(data);
+  } catch (error) {
+    console.error('Error checking availability:', error);
+    $('availStatus').textContent = 'Error checking availability.';
+    // clear the previous alt-times if any
+    $('altTimes').innerHTML = '';
+    renderCalendar([]); // clear calendar
+  } finally {
+    $('checkAvailBtn').disabled = false;
+  }
 });
 
 // --- calendar view for availability ---
