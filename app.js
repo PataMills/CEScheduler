@@ -73,6 +73,7 @@ import autoTasksRouter from "./routes/autoTasks.js";
 import registerTeamTaskApi from "./routes/teamTaskApi.js";
 import registerHealth from "./routes/health.js";
 import { pool, query } from "./db.js";
+import builderPO from "./routes/builder-pos.js";
 
 // --- init app FIRST ---
 const app = express();
@@ -233,6 +234,7 @@ app.use("/api/ops-dashboard", opsDashboardRouter);
 app.use("/api/issues", issuesRouter);
 app.use("/api", materialRouter);
 app.use("/api", poRouter);
+app.use("/api/builder-pos", builderPO);
 
 // GET /api/team/search?q=&crew=&days=14   (next N days)
 app.get("/api/team/search", async (req, res) => {
