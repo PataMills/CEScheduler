@@ -10,6 +10,8 @@
     "db:create": "node ./scripts/db-create.js",
     "db:migrate": "node ./scripts/db-migrate.js",
     "db:seed": "node ./scripts/db-seed.js",
+  "db:apply-sql": "node ./scripts/db-apply-sql.js",
+  "db:seed-crew": "node ./scripts/seed-crew.js",
     "seed:min": "node ./scripts/db-seed-min.js",
     "test": "cross-env NODE_ENV=test node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
     "test:api": "cross-env NODE_ENV=test node --experimental-vm-modules ./node_modules/jest/bin/jest.js __tests__/api --runInBand",

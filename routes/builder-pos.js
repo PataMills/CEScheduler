@@ -8,8 +8,9 @@ const router = express.Router();
 // POST /api/builder-pos/ingest
 // Body: { builder_id, contract_id, po_number, lots:[], items:[] }
 router.post('/ingest', async (req, res) => {
+  console.log('INGEST BODY:', req.body); // debug visibility
   const { builder_id = null, contract_id = null, po_number, lots = [], items = [] } = req.body || {};
-  if (!po_number) return res.status(400).json({ error: 'missing_po_number' });
+  if (!po_number) return res.status(400).json({ error: 'po_number required' });
 
   const client = await pool.connect();
   try {
@@ -26,21 +27,23 @@ router.post('/ingest', async (req, res) => {
       bidId = existing.rows[0].id;
       await client.query(
         `UPDATE public.bids
-            SET po_received_at = now(),
-                stage = $2,
+            SET is_contract = TRUE,
+                contract_id = COALESCE($2, contract_id),
+                po_received_at = now(),
+                stage = 'accepted',
                 updated_at = now()
           WHERE id = $1`,
-        [bidId, 'accepted']
+        [bidId, contract_id]
       ).catch(() => {});
     } else {
       // Insert a new bid row with basic PO metadata; tolerate schema drift
       const ins = await client.query(
-        `INSERT INTO public.bids (builder_id, contract_id, po_number, is_contract, stage, created_at, updated_at)
-         VALUES ($1, $2, $3, TRUE, 'accepted', now(), now())
+        `INSERT INTO public.bids (builder_id, contract_id, po_number, is_contract, po_received_at, stage, created_at, updated_at)
+         VALUES ($1, $2, $3, TRUE, now(), 'accepted', now(), now())
          RETURNING id`,
         [builder_id, contract_id, po_number]
       ).catch(async (e) => {
-        // Fallback for minimal schema (no is_contract/contract_id)
+        // Fallback for minimal schema (no is_contract/contract_id/po_received_at)
         if (String(e?.message || '').includes('does not exist')) {
           const alt = await client.query(
             `INSERT INTO public.bids (builder_id, po_number, stage, created_at, updated_at)
@@ -56,7 +59,7 @@ router.post('/ingest', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Fire-and-forget auto-schedule for this bid
+    // Auto-schedule outside transaction
     const task = await autoSchedule(bidId).catch((e) => {
       console.warn('[builder-pos] autoSchedule failed:', e?.message || e);
       return null;
@@ -65,7 +68,7 @@ router.post('/ingest', async (req, res) => {
     res.json({ ok: true, bidId, task, lots_count: Array.isArray(lots) ? lots.length : 0, items_count: Array.isArray(items) ? items.length : 0 });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
-    console.error('[builder-pos] ingest error:', err);
+    console.error('INGEST ERROR:', err);
     res.status(500).json({ error: err.message || String(err) });
   } finally {
     client.release();

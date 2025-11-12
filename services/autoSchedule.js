@@ -30,18 +30,21 @@ export default async function autoSchedule(bidId) {
       }
     }
 
-    // Pick a crew/resource (prefer type ~ 'install' then 'crew')
+    // Pick a crew/resource (prefer crew/install by lowest utilization)
     let resource = null;
     try {
       const r = await client.query(
         `SELECT id, name FROM public.resources
-          WHERE LOWER(COALESCE(type,'')) IN ('install','crew')
-          ORDER BY id ASC LIMIT 1`
+          WHERE LOWER(COALESCE(type,'')) IN ('crew','install')
+          ORDER BY utilization NULLS LAST, id ASC
+          LIMIT 1`
       );
       resource = r.rows[0] || null;
     } catch (_) {}
     if (!resource) {
-      const r2 = await client.query(`SELECT id, name FROM public.resources ORDER BY id ASC LIMIT 1`).catch(() => ({ rows: [] }));
+      const r2 = await client.query(
+        `SELECT id, name FROM public.resources ORDER BY utilization NULLS LAST, id ASC LIMIT 1`
+      ).catch(() => ({ rows: [] }));
       resource = r2.rows[0] || null;
     }
 
@@ -50,28 +53,28 @@ export default async function autoSchedule(bidId) {
     start.setHours(9, 0, 0, 0);
     const end = new Date(start.getTime() + 4 * 60 * 60 * 1000);
 
-    // Create install task
+    // 1) Create install task (no crew_id column in normalized schema)
     const tIns = await client.query(
       `INSERT INTO public.install_tasks
          (job_id, type, name, window_start, window_end, duration_min, status, notes, checklist, phase_group, created_at, updated_at)
        VALUES ($1,'install',$2,$3::timestamptz,$4::timestamptz,240,'scheduled','', '[]'::jsonb, 'INS', now(), now())
-       RETURNING *`,
+       RETURNING id, job_id, window_start, window_end, status`,
       [jobId, `Install — Job #${jobId}`, start.toISOString(), end.toISOString()]
     );
-    const task = tIns.rows[0];
+    const taskRow = tIns.rows[0];
 
-    // Assign team if we found a resource
+    // 2) Assign crew via install_task_assignments if resource exists
     if (resource && resource.id) {
       await client.query(
-        `INSERT INTO public.install_task_assignments (task_id, resource_id, resource_name)
-         VALUES ($1,$2,$3)
+        `INSERT INTO public.install_task_assignments (task_id, resource_id, resource_name, assigned_at)
+         VALUES ($1,$2,$3, now())
          ON CONFLICT (task_id, COALESCE(resource_id, -1), resource_name) DO NOTHING`,
-        [task.id, resource.id, resource.name || null]
+        [taskRow.id, resource.id, resource.name || null]
       ).catch(() => {});
     }
 
     await client.query('COMMIT');
-    return task;
+  return taskRow;
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch {}
     throw e;
